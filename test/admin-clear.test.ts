@@ -55,6 +55,16 @@ describe('admin dashboard section organization', () => {
 });
 
 describe('admin dashboard deleted rows and snapshot management', () => {
+  it('uses native unchecked visibility checkboxes with explicit query parameters', () => {
+    expect(ADMIN_HTML).toContain('id="showRemovedPrimary" type="checkbox"');
+    expect(ADMIN_HTML).toContain('id="showRemovedSnapshots" type="checkbox"');
+    expect(ADMIN_HTML).toContain('id="showRemovedBackup" type="checkbox"');
+    expect(ADMIN_HTML).not.toMatch(/id="showRemoved(?:Primary|Snapshots|Backup)"[^>]*checked/);
+    expect(ADMIN_HTML).toContain("showRemovedPrimary').checked?'&include_deleted=true':''");
+    expect(ADMIN_HTML).toContain("showRemovedSnapshots').checked?'&include_archived=true':''");
+    expect(ADMIN_HTML).toContain("showRemovedBackup').checked?'&include_removed=true':''");
+  });
+
   it('marks only deleted data cells while keeping restore actions active', () => {
     expect(ADMIN_HTML).not.toContain('.deleted{opacity');
     expect(ADMIN_HTML).not.toContain("tr.className='deleted'");
@@ -72,6 +82,10 @@ describe('admin dashboard deleted rows and snapshot management', () => {
     expect(ADMIN_HTML).toContain("button('View contents'");
     expect(ADMIN_HTML).toContain("button('Restore this snapshot'");
     expect(ADMIN_HTML).not.toContain('id="snapshotData"');
+    expect(ADMIN_HTML).toContain("row.archived?'Archived':'Active'");
+    expect(ADMIN_HTML).toContain("button('Unarchive'");
+    expect(ADMIN_HTML).toContain("button('Remove from active list'");
+    expect(ADMIN_HTML).not.toMatch(/(?:Delete|Permanently delete) snapshot/);
   });
 
   it('loads readable snapshot contents from the authenticated detail endpoint', () => {

@@ -16,9 +16,9 @@ import {
   updateLeaderboardEntry,
 } from './admin';
 import {
-  backupHistory, clearBackup, createBackupChallenge, createSnapshotRestoreChallenge,
+  archiveSnapshot, backupHistory, clearBackup, createBackupChallenge, createSnapshotArchiveChallenge, createSnapshotRestoreChallenge,
   exportBackupCsv, listBackupState, listSnapshots, mutateBackup, reorderBackup, restorePrimaryEntry,
-  restorePrimaryFromManagedBackup, restoreSnapshot, viewSnapshot,
+  restorePrimaryFromManagedBackup, restoreSnapshot, unarchiveSnapshot, viewSnapshot,
 } from './leaderboard-admin-safety';
 import { ADMIN_HTML } from './admin-ui';
 import {
@@ -216,6 +216,9 @@ app.get('/v1/admin/audit', async (c) => {
 });
 app.get('/v1/admin/snapshots',async c=>{await requireAdmin(c.req.raw,c.env);return jsonOk(c,await listSnapshots(c.env,new URL(c.req.url)));});
 app.get('/v1/admin/snapshots/:snapshotId',async c=>{await requireAdmin(c.req.raw,c.env);return jsonOk(c,await viewSnapshot(c.env,c.req.param('snapshotId'),new URL(c.req.url)));});
+app.post('/v1/admin/snapshots/:snapshotId/archive/challenge',async c=>{const a=await requireAdmin(c.req.raw,c.env);return jsonOk(c,await createSnapshotArchiveChallenge(c.env,a,c.req.param('snapshotId')),201);});
+app.post('/v1/admin/snapshots/:snapshotId/archive',async c=>{const a=await requireAdmin(c.req.raw,c.env);return jsonOk(c,await archiveSnapshot(c.req.raw,c.env,a,c.req.param('snapshotId')));});
+app.post('/v1/admin/snapshots/:snapshotId/unarchive',async c=>{const a=await requireAdmin(c.req.raw,c.env);return jsonOk(c,await unarchiveSnapshot(c.req.raw,c.env,a,c.req.param('snapshotId')));});
 app.post('/v1/admin/snapshots/:snapshotId/restore/challenge',async c=>{const a=await requireAdmin(c.req.raw,c.env);return jsonOk(c,await createSnapshotRestoreChallenge(c.env,a,c.req.param('snapshotId')),201);});
 app.post('/v1/admin/snapshots/:snapshotId/restore',async c=>{const a=await requireAdmin(c.req.raw,c.env);return jsonOk(c,await restoreSnapshot(c.req.raw,c.env,a,c.req.param('snapshotId')));});
 app.get('/v1/admin/backup-leaderboard',async c=>{await requireAdmin(c.req.raw,c.env);return jsonOk(c,await listBackupState(c.env,new URL(c.req.url)));});

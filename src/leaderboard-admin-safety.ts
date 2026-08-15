@@ -25,14 +25,26 @@ export function snapshotStatements(env: Env, input: { id: string; actor: string;
 
 export async function listSnapshots(env: Env, url: URL) {
   const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit')) || 50));
-  const rows = await env.DB.prepare(`SELECT id,created_at,actor,reason,trigger_type,source_action_id,entry_count
-    FROM primary_leaderboard_snapshots ORDER BY created_at DESC,id DESC LIMIT ?`).bind(limit).all();
+  const includeArchived = url.searchParams.get('include_archived') === 'true';
+  const rows = await env.DB.prepare(`SELECT s.id,s.created_at,s.actor,s.reason,s.trigger_type,s.source_action_id,s.entry_count,
+    CASE WHEN a.snapshot_id IS NOT NULL AND a.unarchived_at IS NULL THEN 1 ELSE 0 END AS archived,
+    a.archived_at,a.archived_by,a.archive_reason,a.unarchived_at,a.unarchived_by
+    FROM primary_leaderboard_snapshots s LEFT JOIN primary_snapshot_archive_state a ON a.snapshot_id=s.id
+    WHERE (?=1 OR a.snapshot_id IS NULL OR a.unarchived_at IS NOT NULL)
+    ORDER BY s.created_at DESC,s.id DESC LIMIT ?`).bind(includeArchived ? 1 : 0, limit).all();
   return rows.results;
 }
 
-export async function viewSnapshot(env: Env, id: string, url: URL) {
+function validateSnapshotId(id: string) {
   if (!/^[A-Za-z0-9-]{20,64}$/.test(id)) throw new HttpError(400, 'invalid_snapshot_id', 'Invalid snapshot ID.');
-  const snapshot = await env.DB.prepare('SELECT * FROM primary_leaderboard_snapshots WHERE id=?').bind(id).first();
+}
+
+export async function viewSnapshot(env: Env, id: string, url: URL) {
+  validateSnapshotId(id);
+  const snapshot = await env.DB.prepare(`SELECT s.*,
+    CASE WHEN a.snapshot_id IS NOT NULL AND a.unarchived_at IS NULL THEN 1 ELSE 0 END AS archived,
+    a.archived_at,a.archived_by,a.archive_reason,a.unarchived_at,a.unarchived_by
+    FROM primary_leaderboard_snapshots s LEFT JOIN primary_snapshot_archive_state a ON a.snapshot_id=s.id WHERE s.id=?`).bind(id).first();
   if (!snapshot) throw new HttpError(404, 'snapshot_not_found', 'Snapshot was not found.');
   const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit')) || 100));
   const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0);
@@ -42,11 +54,66 @@ export async function viewSnapshot(env: Env, id: string, url: URL) {
   return { snapshot, entries: entries.results };
 }
 
+export async function createSnapshotArchiveChallenge(env: Env, admin: AdminAuth, snapshotId: string) {
+  validateSnapshotId(snapshotId);
+  const snapshot = await env.DB.prepare('SELECT id FROM primary_leaderboard_snapshots WHERE id=?').bind(snapshotId).first();
+  if (!snapshot) throw new HttpError(404, 'snapshot_not_found', 'Snapshot was not found.');
+  const archived = await env.DB.prepare('SELECT snapshot_id FROM primary_snapshot_archive_state WHERE snapshot_id=? AND unarchived_at IS NULL').bind(snapshotId).first();
+  if (archived) throw new HttpError(409, 'snapshot_already_archived', 'Snapshot is already removed from the active list.');
+  const id=newId(),now=utcNow(),expires=new Date(Date.now()+300_000).toISOString();
+  await env.DB.prepare('INSERT INTO admin_confirmation_challenges(id,actor,action,created_at,expires_at) VALUES(?,?,?,?,?)')
+    .bind(id,admin.actor,`snapshot.archive:${snapshotId}`,now,expires).run();
+  return {challenge_id:id,snapshot_id:snapshotId,expires_at:expires,confirmation_phrase:`ARCHIVE SNAPSHOT ${snapshotId}`};
+}
+
+export async function archiveSnapshot(request:Request,env:Env,admin:AdminAuth,snapshotId:string){
+  validateSnapshotId(snapshotId);
+  const body=await readJson<Record<string,unknown>>(request),phrase=`ARCHIVE SNAPSHOT ${snapshotId}`;
+  if(body.confirmation!==true||body.second_confirmation!==true||body.confirmation_phrase!==phrase||typeof body.challenge_id!=='string')
+    throw new HttpError(400,'double_confirmation_required','Two confirmations and the exact archive phrase are required.');
+  const challenge=await env.DB.prepare('SELECT id FROM admin_confirmation_challenges WHERE id=? AND actor=? AND action=? AND used_at IS NULL AND expires_at>?')
+    .bind(body.challenge_id,admin.actor,`snapshot.archive:${snapshotId}`,utcNow()).first<{id:string}>();
+  if(!challenge)throw new HttpError(409,'confirmation_invalid','Confirmation is expired, used, or does not match actor, action, or snapshot.');
+  const snapshot=await env.DB.prepare('SELECT id FROM primary_leaderboard_snapshots WHERE id=?').bind(snapshotId).first();
+  if(!snapshot)throw new HttpError(404,'snapshot_not_found','Snapshot was not found.');
+  const active=await env.DB.prepare('SELECT snapshot_id FROM primary_snapshot_archive_state WHERE snapshot_id=? AND unarchived_at IS NULL').bind(snapshotId).first();
+  if(active)throw new HttpError(409,'snapshot_already_archived','Snapshot is already removed from the active list.');
+  const now=utcNow(),auditId=newId(),reason=typeof body.reason==='string'?body.reason.slice(0,500)||null:null;
+  const before={archived:false},after={archived:true,archived_at:now,archived_by:admin.actor,archive_reason:reason};
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO primary_snapshot_archive_state(snapshot_id,archived_at,archived_by,archive_reason,unarchived_at,unarchived_by,updated_at)
+      VALUES(?,?,?,?,NULL,NULL,?) ON CONFLICT(snapshot_id) DO UPDATE SET archived_at=excluded.archived_at,archived_by=excluded.archived_by,
+      archive_reason=excluded.archive_reason,unarchived_at=NULL,unarchived_by=NULL,updated_at=excluded.updated_at`).bind(snapshotId,now,admin.actor,reason,now),
+    env.DB.prepare(`INSERT INTO admin_audit_logs(id,actor,action,target_type,target_id,before_json,after_json,reason,created_at)
+      VALUES(?,?,'snapshot.archive','snapshot',?,?,?,?,?)`).bind(auditId,admin.actor,snapshotId,JSON.stringify(before),JSON.stringify(after),reason,now),
+    env.DB.prepare('UPDATE admin_confirmation_challenges SET used_at=? WHERE id=? AND used_at IS NULL').bind(now,challenge.id),
+  ]);
+  return {audit_id:auditId,snapshot_id:snapshotId,archived:true,contents_preserved:true,backup_modified:false};
+}
+
+export async function unarchiveSnapshot(request:Request,env:Env,admin:AdminAuth,snapshotId:string){
+  validateSnapshotId(snapshotId);const body=await readJson<Record<string,unknown>>(request);
+  if(body.confirmation!==true||body.snapshot_id!==snapshotId)throw new HttpError(400,'snapshot_confirmation_required','Confirm the exact snapshot ID to unarchive.');
+  const snapshot=await env.DB.prepare('SELECT id FROM primary_leaderboard_snapshots WHERE id=?').bind(snapshotId).first();
+  if(!snapshot)throw new HttpError(404,'snapshot_not_found','Snapshot was not found.');
+  const state=await env.DB.prepare('SELECT * FROM primary_snapshot_archive_state WHERE snapshot_id=? AND unarchived_at IS NULL').bind(snapshotId).first<Record<string,unknown>>();
+  if(!state)throw new HttpError(409,'snapshot_active','Snapshot is already active.');
+  const now=utcNow(),auditId=newId(),before={archived:true,archived_at:state.archived_at,archived_by:state.archived_by,archive_reason:state.archive_reason},after={archived:false,unarchived_at:now,unarchived_by:admin.actor};
+  await env.DB.batch([
+    env.DB.prepare('UPDATE primary_snapshot_archive_state SET unarchived_at=?,unarchived_by=?,updated_at=? WHERE snapshot_id=? AND unarchived_at IS NULL').bind(now,admin.actor,now,snapshotId),
+    env.DB.prepare(`INSERT INTO admin_audit_logs(id,actor,action,target_type,target_id,before_json,after_json,reason,created_at)
+      VALUES(?,?,'snapshot.unarchive','snapshot',?,?,?,?,?)`).bind(auditId,admin.actor,snapshotId,JSON.stringify(before),JSON.stringify(after),typeof body.reason==='string'?body.reason.slice(0,500)||null:null,now),
+  ]);
+  return {audit_id:auditId,snapshot_id:snapshotId,archived:false,contents_preserved:true,backup_modified:false};
+}
+
 export async function createSnapshotRestoreChallenge(env: Env, admin: AdminAuth, snapshotId: string) {
   const source = snapshotId === 'latest-pre-clear'
-    ? await env.DB.prepare(`SELECT id FROM primary_leaderboard_snapshots WHERE trigger_type='pre_clear' ORDER BY created_at DESC LIMIT 1`).first<{id:string}>()
-    : await env.DB.prepare('SELECT id FROM primary_leaderboard_snapshots WHERE id=?').bind(snapshotId).first<{id:string}>();
-  if (!source) throw new HttpError(404, 'snapshot_not_found', 'Snapshot was not found.');
+    ? await env.DB.prepare(`SELECT s.id FROM primary_leaderboard_snapshots s LEFT JOIN primary_snapshot_archive_state a ON a.snapshot_id=s.id
+      WHERE s.trigger_type='pre_clear' AND (a.snapshot_id IS NULL OR a.unarchived_at IS NOT NULL) ORDER BY s.created_at DESC LIMIT 1`).first<{id:string}>()
+    : (validateSnapshotId(snapshotId), await env.DB.prepare(`SELECT s.id FROM primary_leaderboard_snapshots s LEFT JOIN primary_snapshot_archive_state a ON a.snapshot_id=s.id
+      WHERE s.id=? AND (a.snapshot_id IS NULL OR a.unarchived_at IS NOT NULL)`).bind(snapshotId).first<{id:string}>());
+  if (!source) throw new HttpError(404, snapshotId==='latest-pre-clear'?'no_active_pre_clear_snapshot':'snapshot_not_found', snapshotId==='latest-pre-clear'?'No active pre-clear snapshot is available.':'Snapshot was not found or is archived.');
   const id = newId(), now = utcNow(), expires = new Date(Date.now() + 300_000).toISOString();
   await env.DB.prepare(`INSERT INTO admin_confirmation_challenges(id,actor,action,created_at,expires_at)
     VALUES(?,? ,?, ?,?)`).bind(id, admin.actor, `snapshot.restore:${source.id}`, now, expires).run();
@@ -54,6 +121,7 @@ export async function createSnapshotRestoreChallenge(env: Env, admin: AdminAuth,
 }
 
 export async function restoreSnapshot(request: Request, env: Env, admin: AdminAuth, snapshotId: string) {
+  validateSnapshotId(snapshotId);
   const body = await readJson<Record<string, unknown>>(request);
   const phrase = `RESTORE SNAPSHOT ${snapshotId}`;
   if (body.confirmation_1 !== true || body.confirmation_2 !== true || body.confirmation_phrase !== phrase || typeof body.challenge_id !== 'string')
@@ -62,8 +130,8 @@ export async function restoreSnapshot(request: Request, env: Env, admin: AdminAu
     WHERE id=? AND actor=? AND action=? AND used_at IS NULL AND expires_at>?`).bind(
       body.challenge_id, admin.actor, `snapshot.restore:${snapshotId}`, utcNow()).first<{id:string}>();
   if (!challenge) throw new HttpError(409, 'confirmation_expired', 'Confirmation is invalid, expired, or used.');
-  const source = await env.DB.prepare(`SELECT id,entry_count FROM primary_leaderboard_snapshots WHERE id=?
-    AND entry_count=(SELECT COUNT(*) FROM primary_leaderboard_snapshot_entries WHERE snapshot_id=?)`).bind(snapshotId,snapshotId).first<{id:string;entry_count:number}>();
+  const source = await env.DB.prepare(`SELECT s.id,s.entry_count FROM primary_leaderboard_snapshots s LEFT JOIN primary_snapshot_archive_state a ON a.snapshot_id=s.id WHERE s.id=?
+    AND (a.snapshot_id IS NULL OR a.unarchived_at IS NOT NULL) AND s.entry_count=(SELECT COUNT(*) FROM primary_leaderboard_snapshot_entries WHERE snapshot_id=?)`).bind(snapshotId,snapshotId).first<{id:string;entry_count:number}>();
   if (!source) throw new HttpError(409, 'invalid_restore_source', 'Snapshot is missing or incomplete.');
   const now=utcNow(), safetyId=newId(), auditId=newId();
   await env.DB.batch([
@@ -113,9 +181,9 @@ async function consumeConfirmation(env:Env,admin:AdminAuth,b:Record<string,unkno
   if(!row||b.confirmation_phrase!==row.required_phrase) throw new HttpError(409,'confirmation_invalid','Confirmation is expired, used, or does not match actor, action, target, or phrase.');
   return row.id;
 }
-export async function listBackupState(env:Env,url:URL){const limit=Math.min(500,Math.max(1,Number(url.searchParams.get('limit'))||100));const r=await env.BACKUP_DB.prepare(`SELECT * FROM managed_leaderboard_state ORDER BY CASE WHEN deleted_at IS NULL THEN 0 ELSE 1 END,CASE WHEN manual_rank IS NULL THEN 1 ELSE 0 END,manual_rank,best_score DESC LIMIT ?`).bind(limit).all();return r.results;}
+export async function listBackupState(env:Env,url:URL){const limit=Math.min(500,Math.max(1,Number(url.searchParams.get('limit'))||100)),includeRemoved=url.searchParams.get('include_removed')==='true';const r=await env.BACKUP_DB.prepare(`SELECT * FROM managed_leaderboard_state WHERE (?=1 OR deleted_at IS NULL) ORDER BY CASE WHEN deleted_at IS NULL THEN 0 ELSE 1 END,CASE WHEN manual_rank IS NULL THEN 1 ELSE 0 END,manual_rank,best_score DESC LIMIT ?`).bind(includeRemoved?1:0,limit).all();return r.results;}
 export async function backupHistory(env:Env,url:URL){const limit=Math.min(200,Math.max(1,Number(url.searchParams.get('limit'))||50));return (await env.BACKUP_DB.prepare('SELECT * FROM backup_admin_actions ORDER BY created_at DESC LIMIT ?').bind(limit).all()).results;}
-export async function exportBackupCsv(env:Env){const rows=await listBackupState(env,new URL('https://local/?limit=500'));const headers=ENTRY_COLUMNS.split(',').map(x=>x.trim()).concat(['latest_action_type','latest_action_at','source_action_id']);const cell=(v:unknown)=>{const s=v==null?'':String(v);return /[",\r\n]/.test(s)?`"${s.replace(/"/g,'""')}"`:s;};return [headers.join(','),...rows.map(r=>headers.map(h=>cell((r as Record<string,unknown>)[h])).join(','))].join('\r\n');}
+export async function exportBackupCsv(env:Env){const rows=await listBackupState(env,new URL('https://local/?limit=500&include_removed=true'));const headers=ENTRY_COLUMNS.split(',').map(x=>x.trim()).concat(['latest_action_type','latest_action_at','source_action_id']);const cell=(v:unknown)=>{const s=v==null?'':String(v);return /[",\r\n]/.test(s)?`"${s.replace(/"/g,'""')}"`:s;};return [headers.join(','),...rows.map(r=>headers.map(h=>cell((r as Record<string,unknown>)[h])).join(','))].join('\r\n');}
 export async function reorderBackup(request:Request,env:Env,admin:AdminAuth){const b=await readJson<Record<string,unknown>>(request);if(!Array.isArray(b.player_ids)||b.player_ids.length>500||b.player_ids.some(x=>typeof x!=='string')||new Set(b.player_ids).size!==b.player_ids.length)throw new HttpError(400,'invalid_order','player_ids is invalid.');const target=String(b.player_ids.length),cid=await consumeConfirmation(env,admin,b,'reorder',target);const existing=await env.BACKUP_DB.prepare('SELECT player_id,manual_rank FROM managed_leaderboard_state WHERE deleted_at IS NULL ORDER BY player_id').all<{player_id:string;manual_rank:number|null}>();const ids=b.player_ids as string[];if(ids.length!==existing.results.length||ids.some(x=>!existing.results.some(e=>e.player_id===x)))throw new HttpError(400,'invalid_order','Order must contain every active managed entry exactly once.');const now=utcNow(),id=newId(),stmts=[env.BACKUP_DB.prepare('UPDATE managed_leaderboard_state SET manual_rank=NULL WHERE deleted_at IS NULL')];ids.forEach((x,i)=>stmts.push(env.BACKUP_DB.prepare(`UPDATE managed_leaderboard_state SET manual_rank=?,latest_action_type='backup_admin_reorder',latest_action_at=?,source_action_id=? WHERE player_id=?`).bind(i+1,now,cid,x)));stmts.push(env.BACKUP_DB.prepare(`INSERT INTO backup_admin_actions(id,actor,action,target_type,target_id,before_json,after_json,reason,confirmation_challenge_id,created_at) VALUES(?,?,'reorder','leaderboard','global',?,?,?,?,?)`).bind(id,admin.actor,JSON.stringify(existing.results),JSON.stringify(ids.map((player_id,i)=>({player_id,manual_rank:i+1}))),String(b.reason||'').slice(0,500)||null,cid,now),env.BACKUP_DB.prepare('UPDATE backup_confirmation_challenges SET used_at=? WHERE id=?').bind(now,cid));await env.BACKUP_DB.batch(stmts);return {action_id:id,reordered:ids.length,permanent_no_undo:true};}
 export async function mutateBackup(request:Request,env:Env,admin:AdminAuth,action:string,target:string){
   if(!['edit','delete','restore'].includes(action))throw new HttpError(400,'invalid_action','Invalid backup action.');
