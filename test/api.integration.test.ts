@@ -93,6 +93,7 @@ beforeAll(async () => {
   await applySql(mainDb, readFileSync(new URL('../migrations/0001_initial.sql', import.meta.url), 'utf8'));
   await applySql(backupDb, readFileSync(new URL('../backup-migrations/0001_backup.sql', import.meta.url), 'utf8'));
   await applySql(mainDb, readFileSync(new URL('../migrations/0002_leaderboard_snapshots.sql', import.meta.url), 'utf8'));
+  await applySql(mainDb, readFileSync(new URL('../migrations/0003_snapshot_archival.sql', import.meta.url), 'utf8'));
   await applySql(backupDb, readFileSync(new URL('../backup-migrations/0002_managed_leaderboard.sql', import.meta.url), 'utf8'));
 });
 
@@ -295,6 +296,39 @@ describe.sequential('Worker + D1 integration', () => {
     const page=await json<{entries:unknown[]}>(await mf.dispatchFetch(`https://api.example/v1/admin/snapshots/${id}?limit=1&offset=0`,{headers:adminHeaders()}));expect(page.data.entries).toHaveLength(1);
     expect((await mf.dispatchFetch('https://api.example/v1/admin/snapshots/bad',{headers:adminHeaders()})).status).toBe(400);
     expect((await mf.dispatchFetch('https://api.example/v1/admin/snapshots/00000000-0000-4000-8000-000000000000',{headers:adminHeaders()})).status).toBe(404);
+  });
+
+  it('archives snapshots with bound single-use confirmation, hides them, preserves contents, and audits unarchive', async () => {
+    const active=await json<Array<{id:string;archived:number}>>(await mf.dispatchFetch('https://api.example/v1/admin/snapshots',{headers:adminHeaders()}));
+    const id=active.data[0]!.id;
+    const primaryBefore=(await mainDb.prepare('SELECT * FROM leaderboard_entries ORDER BY player_id').all()).results;
+    const backupBefore=(await backupDb.prepare('SELECT * FROM managed_leaderboard_state ORDER BY player_id').all()).results;
+    const expired=await json<{challenge_id:string;confirmation_phrase:string}>(await mf.dispatchFetch(`https://api.example/v1/admin/snapshots/${id}/archive/challenge`,{method:'POST',headers:adminHeaders(),body:'{}'}));
+    expect(await mainDb.prepare('SELECT actor,action FROM admin_confirmation_challenges WHERE id=?').bind(expired.data.challenge_id).first()).toEqual({actor:'integration-test',action:`snapshot.archive:${id}`});
+    await mainDb.prepare("UPDATE admin_confirmation_challenges SET expires_at='2000-01-01T00:00:00Z' WHERE id=?").bind(expired.data.challenge_id).run();
+    expect((await mf.dispatchFetch(`https://api.example/v1/admin/snapshots/${id}/archive`,{method:'POST',headers:adminHeaders(),body:JSON.stringify({challenge_id:expired.data.challenge_id,confirmation:true,second_confirmation:true,confirmation_phrase:expired.data.confirmation_phrase})})).status).toBe(409);
+    const challenge=await json<{challenge_id:string;confirmation_phrase:string}>(await mf.dispatchFetch(`https://api.example/v1/admin/snapshots/${id}/archive/challenge`,{method:'POST',headers:adminHeaders(),body:'{}'}));
+    const wrongActor={...adminHeaders(),'X-Admin-Actor':'other'};
+    expect((await mf.dispatchFetch(`https://api.example/v1/admin/snapshots/${id}/archive`,{method:'POST',headers:wrongActor,body:JSON.stringify({challenge_id:challenge.data.challenge_id,confirmation:true,second_confirmation:true,confirmation_phrase:challenge.data.confirmation_phrase})})).status).toBe(409);
+    expect((await mf.dispatchFetch(`https://api.example/v1/admin/snapshots/${id}/archive`,{method:'POST',headers:adminHeaders(),body:JSON.stringify({challenge_id:challenge.data.challenge_id,confirmation:true,second_confirmation:true,confirmation_phrase:'WRONG'})})).status).toBe(400);
+    const body=JSON.stringify({challenge_id:challenge.data.challenge_id,confirmation:true,second_confirmation:true,confirmation_phrase:challenge.data.confirmation_phrase,reason:'test archive'});
+    expect((await mf.dispatchFetch(`https://api.example/v1/admin/snapshots/${id}/archive`,{method:'POST',headers:adminHeaders(),body})).status).toBe(200);
+    expect((await mf.dispatchFetch(`https://api.example/v1/admin/snapshots/${id}/archive`,{method:'POST',headers:adminHeaders(),body})).status).toBe(409);
+    const hidden=await json<Array<{id:string}>>(await mf.dispatchFetch('https://api.example/v1/admin/snapshots',{headers:adminHeaders()}));expect(hidden.data.some(x=>x.id===id)).toBe(false);
+    const shown=await json<Array<{id:string;archived:number}>>(await mf.dispatchFetch('https://api.example/v1/admin/snapshots?include_archived=true',{headers:adminHeaders()}));expect(shown.data.find(x=>x.id===id)?.archived).toBe(1);
+    const detail=await json<{entries:unknown[];snapshot:{archived:number}}>(await mf.dispatchFetch(`https://api.example/v1/admin/snapshots/${id}`,{headers:adminHeaders()}));expect(detail.data.snapshot.archived).toBe(1);expect(detail.data.entries.length).toBeGreaterThan(0);
+    expect((await mf.dispatchFetch(`https://api.example/v1/admin/snapshots/${id}/restore/challenge`,{method:'POST',headers:adminHeaders(),body:'{}'})).status).toBe(404);
+    expect((await mf.dispatchFetch(`https://api.example/v1/admin/snapshots/${id}/unarchive`,{method:'POST',headers:adminHeaders(),body:JSON.stringify({confirmation:true,snapshot_id:id})})).status).toBe(200);
+    expect((await mainDb.prepare("SELECT COUNT(*) total FROM admin_audit_logs WHERE target_id=? AND action IN ('snapshot.archive','snapshot.unarchive')").bind(id).first<{total:number}>())!.total).toBe(2);
+    expect((await mainDb.prepare('SELECT * FROM leaderboard_entries ORDER BY player_id').all()).results).toEqual(primaryBefore);
+    expect((await backupDb.prepare('SELECT * FROM managed_leaderboard_state ORDER BY player_id').all()).results).toEqual(backupBefore);
+  });
+
+  it('latest pre-clear ignores archived recovery points and reports a structured error', async()=>{
+    const rows=await mainDb.prepare("SELECT id FROM primary_leaderboard_snapshots WHERE trigger_type='pre_clear'").all<{id:string}>();
+    const now=new Date().toISOString();for(const row of rows.results)await mainDb.prepare(`INSERT INTO primary_snapshot_archive_state(snapshot_id,archived_at,archived_by,updated_at) VALUES(? ,?,'test',?) ON CONFLICT(snapshot_id) DO UPDATE SET unarchived_at=NULL,archived_at=excluded.archived_at,updated_at=excluded.updated_at`).bind(row.id,now,now).run();
+    const response=await mf.dispatchFetch('https://api.example/v1/admin/snapshots/latest-pre-clear/restore/challenge',{method:'POST',headers:adminHeaders(),body:'{}'});expect(response.status).toBe(404);expect((await json<never>(response)).error?.code).toBe('no_active_pre_clear_snapshot');
+    for(const row of rows.results)await mainDb.prepare("UPDATE primary_snapshot_archive_state SET unarchived_at=?,unarchived_by='test',updated_at=? WHERE snapshot_id=?").bind(new Date(Date.now()+1).toISOString(),new Date(Date.now()+1).toISOString(),row.id).run();
   });
 
   it('latest pre-clear selected restore requires exact confirmation and creates a safety snapshot', async () => {
