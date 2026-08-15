@@ -15,6 +15,11 @@ import {
   undoAdminAction,
   updateLeaderboardEntry,
 } from './admin';
+import {
+  backupHistory, clearBackup, createBackupChallenge, createSnapshotRestoreChallenge,
+  exportBackupCsv, listBackupState, listSnapshots, mutateBackup, reorderBackup, restorePrimaryEntry,
+  restorePrimaryFromManagedBackup, restoreSnapshot, viewSnapshot,
+} from './leaderboard-admin-safety';
 import { ADMIN_HTML } from './admin-ui';
 import {
   deleteAccountPermanently,
@@ -181,6 +186,10 @@ app.delete('/v1/admin/leaderboard/:playerId', async (c) => {
   c.executionCtx.waitUntil(flushBackupOutbox(c.env));
   return jsonOk(c, result);
 });
+app.post('/v1/admin/leaderboard/:playerId/restore', async (c) => {
+  const admin=await requireAdmin(c.req.raw,c.env);const result=await restorePrimaryEntry(c.env,admin,c.req.param('playerId'));
+  c.executionCtx.waitUntil(flushBackupOutbox(c.env));return jsonOk(c,result);
+});
 app.post('/v1/admin/leaderboard/reorder', async (c) => {
   const admin = await requireAdmin(c.req.raw, c.env);
   const result = await reorderLeaderboard(c.req.raw, c.env, admin);
@@ -205,6 +214,19 @@ app.get('/v1/admin/audit', async (c) => {
   await requireAdmin(c.req.raw, c.env);
   return jsonOk(c, await listAuditLogs(c.env, new URL(c.req.url)));
 });
+app.get('/v1/admin/snapshots',async c=>{await requireAdmin(c.req.raw,c.env);return jsonOk(c,await listSnapshots(c.env,new URL(c.req.url)));});
+app.get('/v1/admin/snapshots/:snapshotId',async c=>{await requireAdmin(c.req.raw,c.env);return jsonOk(c,await viewSnapshot(c.env,c.req.param('snapshotId'),new URL(c.req.url)));});
+app.post('/v1/admin/snapshots/:snapshotId/restore/challenge',async c=>{const a=await requireAdmin(c.req.raw,c.env);return jsonOk(c,await createSnapshotRestoreChallenge(c.env,a,c.req.param('snapshotId')),201);});
+app.post('/v1/admin/snapshots/:snapshotId/restore',async c=>{const a=await requireAdmin(c.req.raw,c.env);return jsonOk(c,await restoreSnapshot(c.req.raw,c.env,a,c.req.param('snapshotId')));});
+app.get('/v1/admin/backup-leaderboard',async c=>{await requireAdmin(c.req.raw,c.env);return jsonOk(c,await listBackupState(c.env,new URL(c.req.url)));});
+app.get('/v1/admin/backup-leaderboard/export.csv',async c=>{await requireAdmin(c.req.raw,c.env);return new Response(await exportBackupCsv(c.env),{headers:{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename="backup-leaderboard.csv"','Cache-Control':'no-store'}});});
+app.get('/v1/admin/backup-leaderboard/history',async c=>{await requireAdmin(c.req.raw,c.env);return jsonOk(c,await backupHistory(c.env,new URL(c.req.url)));});
+app.post('/v1/admin/backup-leaderboard/challenges',async c=>{const a=await requireAdmin(c.req.raw,c.env);return jsonOk(c,await createBackupChallenge(c.req.raw,c.env,a),201);});
+app.patch('/v1/admin/backup-leaderboard/:playerId',async c=>{const a=await requireAdmin(c.req.raw,c.env);return jsonOk(c,await mutateBackup(c.req.raw,c.env,a,'edit',c.req.param('playerId')));});
+app.delete('/v1/admin/backup-leaderboard/:playerId',async c=>{const a=await requireAdmin(c.req.raw,c.env);return jsonOk(c,await mutateBackup(c.req.raw,c.env,a,'delete',c.req.param('playerId')));});
+app.post('/v1/admin/backup-leaderboard/:playerId/restore',async c=>{const a=await requireAdmin(c.req.raw,c.env);return jsonOk(c,await mutateBackup(c.req.raw,c.env,a,'restore',c.req.param('playerId')));});
+app.post('/v1/admin/backup-leaderboard/reorder',async c=>{const a=await requireAdmin(c.req.raw,c.env);return jsonOk(c,await reorderBackup(c.req.raw,c.env,a));});
+app.post('/v1/admin/backup-leaderboard/clear',async c=>{const a=await requireAdmin(c.req.raw,c.env);return jsonOk(c,await clearBackup(c.req.raw,c.env,a));});
 app.get('/v1/admin/analytics/summary', async (c) => {
   await requireAdmin(c.req.raw, c.env);
   return jsonOk(c, await analyticsSummary(c.env, new URL(c.req.url)));
@@ -219,7 +241,7 @@ app.post('/v1/admin/backups/restore-leaderboard/challenge', async (c) => {
 });
 app.post('/v1/admin/backups/restore-leaderboard', async (c) => {
   const admin = await requireAdmin(c.req.raw, c.env);
-  return jsonOk(c, await restorePrimaryLeaderboardFromBackup(c.req.raw, c.env, admin));
+  return jsonOk(c, await restorePrimaryFromManagedBackup(c.req.raw, c.env, admin));
 });
 
 const worker: ExportedHandler<Env> = {

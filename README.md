@@ -115,3 +115,10 @@ The integration suite bundles the actual Worker, runs it in Cloudflare's local w
 - [Cloudflare Workers testing](https://developers.cloudflare.com/workers/testing/vitest-integration/)
 
 See [API.md](docs/API.md), [CLIENT_INTEGRATION.md](docs/CLIENT_INTEGRATION.md), [OPERATIONS.md](docs/OPERATIONS.md), and [REQUIREMENTS.md](docs/REQUIREMENTS.md).
+# Leaderboard recovery model
+
+The service has four deliberately different recovery layers: immutable UTC **primary snapshots**; exact, independently managed `BACKUP_DB.managed_leaderboard_state`; append-only forensic `backup_events` (except required privacy redaction); and D1 Time Travel for infrastructure disaster recovery—not application Undo.
+
+Primary clear creates a pre-clear snapshot in its atomic D1 batch. Every full restore creates a pre-replace safety snapshot, then uses exact replacement rather than highest-score merging, retaining ordering, deletion state, notes, verification, metadata, and timestamps without modifying `BACKUP_DB`.
+
+Apply numbered migrations locally with `npm run db:migrate:local` and `npm run backup:migrate:local`. See [operations](docs/OPERATIONS.md) for recovery, rollout, historical limitations, and smoke tests.
