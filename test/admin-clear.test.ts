@@ -53,3 +53,38 @@ describe('admin dashboard section organization', () => {
     expect(backupRows).toBeLessThan(backupDangerStart);
   });
 });
+
+describe('admin dashboard deleted rows and snapshot management', () => {
+  it('marks only deleted data cells while keeping restore actions active', () => {
+    expect(ADMIN_HTML).not.toContain('.deleted{opacity');
+    expect(ADMIN_HTML).not.toContain("tr.className='deleted'");
+    expect(ADMIN_HTML).toContain('.deleted-data{opacity:.5;text-decoration:line-through}');
+    expect(ADMIN_HTML).toContain("td.className='deleted-data'");
+    expect(ADMIN_HTML).toContain("actionCell.className='actions-cell'");
+    expect(ADMIN_HTML).toContain("button('Restore',async function()");
+    expect(ADMIN_HTML).toContain("button('Restore permanently',function()");
+  });
+
+  it('renders snapshots as structured, manageable rows rather than raw JSON', () => {
+    expect(ADMIN_HTML).toContain('id="snapshotRows"');
+    expect(ADMIN_HTML).toContain('<th>Created UTC</th><th>Trigger type</th><th>Actor</th><th>Entry count</th><th>Reason</th><th>Snapshot ID</th><th>Actions</th>');
+    expect(ADMIN_HTML).toContain("button('Copy ID'");
+    expect(ADMIN_HTML).toContain("button('View contents'");
+    expect(ADMIN_HTML).toContain("button('Restore this snapshot'");
+    expect(ADMIN_HTML).not.toContain('id="snapshotData"');
+  });
+
+  it('loads readable snapshot contents from the authenticated detail endpoint', () => {
+    expect(ADMIN_HTML).toContain("api('/v1/admin/snapshots/'+encodeURIComponent(id)+'?limit=500&offset=0')");
+    expect(ADMIN_HTML).toContain('id="snapshotEntryRows"');
+    expect(ADMIN_HTML).toContain('id="closeSnapshotDetail"');
+    expect(ADMIN_HTML).toContain("row.deleted_at?'Deleted':'Active'");
+  });
+
+  it('uses selected-snapshot challenge and restore endpoints with the server phrase', () => {
+    expect(ADMIN_HTML).toContain("encodeURIComponent(id)+'/restore/challenge'");
+    expect(ADMIN_HTML).toContain("encodeURIComponent(id)+'/restore'");
+    expect(ADMIN_HTML).toContain('confirmation_phrase:ch.data.confirmation_phrase');
+    expect(ADMIN_HTML).toContain('Promise.all([loadLeaderboard(),loadSnapshots()])');
+  });
+});
