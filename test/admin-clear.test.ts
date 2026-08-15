@@ -21,3 +21,84 @@ describe('global leaderboard clear safety', () => {
     expect(handler).toContain("confirmation_phrase !== 'CLEAR PRIMARY ONLY'");
   });
 });
+
+describe('admin dashboard section organization', () => {
+  it('renders the primary and backup sections in the required DOM order', () => {
+    const headings = [
+      '<h2>Authentication</h2>',
+      '<h2>Primary Global Leaderboard — Primary Database</h2>',
+      '<h2>Primary Snapshots</h2>',
+      '<h2>Primary Operations and Recovery</h2>',
+      '<h2>Primary Danger Zone</h2>',
+      '<h2>Backup Global Leaderboard — Independent Backup Database</h2>',
+      '<h2>Backup Danger Zone</h2>',
+    ];
+
+    const positions = headings.map((heading) => ADMIN_HTML.indexOf(heading));
+    expect(positions.every((position) => position >= 0)).toBe(true);
+    expect(positions).toEqual([...positions].sort((left, right) => left - right));
+  });
+
+  it('keeps each leaderboard table inside its labeled database section', () => {
+    const primaryStart = ADMIN_HTML.indexOf('id="primaryLeaderboard"');
+    const primaryRows = ADMIN_HTML.indexOf('id="rows"');
+    const snapshotsStart = ADMIN_HTML.indexOf('id="primarySnapshots"');
+    const backupStart = ADMIN_HTML.indexOf('id="backupLeaderboard"');
+    const backupRows = ADMIN_HTML.indexOf('id="backupRows"');
+    const backupDangerStart = ADMIN_HTML.indexOf('id="backupDanger"');
+
+    expect(primaryStart).toBeLessThan(primaryRows);
+    expect(primaryRows).toBeLessThan(snapshotsStart);
+    expect(backupStart).toBeLessThan(backupRows);
+    expect(backupRows).toBeLessThan(backupDangerStart);
+  });
+});
+
+describe('admin dashboard deleted rows and snapshot management', () => {
+  it('uses native unchecked visibility checkboxes with explicit query parameters', () => {
+    expect(ADMIN_HTML).toContain('id="showRemovedPrimary" type="checkbox"');
+    expect(ADMIN_HTML).toContain('id="showRemovedSnapshots" type="checkbox"');
+    expect(ADMIN_HTML).toContain('id="showRemovedBackup" type="checkbox"');
+    expect(ADMIN_HTML).not.toMatch(/id="showRemoved(?:Primary|Snapshots|Backup)"[^>]*checked/);
+    expect(ADMIN_HTML).toContain("showRemovedPrimary').checked?'&include_deleted=true':''");
+    expect(ADMIN_HTML).toContain("showRemovedSnapshots').checked?'&include_archived=true':''");
+    expect(ADMIN_HTML).toContain("showRemovedBackup').checked?'&include_removed=true':''");
+  });
+
+  it('marks only deleted data cells while keeping restore actions active', () => {
+    expect(ADMIN_HTML).not.toContain('.deleted{opacity');
+    expect(ADMIN_HTML).not.toContain("tr.className='deleted'");
+    expect(ADMIN_HTML).toContain('.deleted-data{opacity:.5;text-decoration:line-through}');
+    expect(ADMIN_HTML).toContain("td.className='deleted-data'");
+    expect(ADMIN_HTML).toContain("actionCell.className='actions-cell'");
+    expect(ADMIN_HTML).toContain("button('Restore',async function()");
+    expect(ADMIN_HTML).toContain("button('Restore permanently',function()");
+  });
+
+  it('renders snapshots as structured, manageable rows rather than raw JSON', () => {
+    expect(ADMIN_HTML).toContain('id="snapshotRows"');
+    expect(ADMIN_HTML).toContain('<th>Created UTC</th><th>Trigger type</th><th>Actor</th><th>Entry count</th><th>Reason</th><th>Snapshot ID</th><th>Actions</th>');
+    expect(ADMIN_HTML).toContain("button('Copy ID'");
+    expect(ADMIN_HTML).toContain("button('View contents'");
+    expect(ADMIN_HTML).toContain("button('Restore this snapshot'");
+    expect(ADMIN_HTML).not.toContain('id="snapshotData"');
+    expect(ADMIN_HTML).toContain("row.archived?'Archived':'Active'");
+    expect(ADMIN_HTML).toContain("button('Unarchive'");
+    expect(ADMIN_HTML).toContain("button('Remove from active list'");
+    expect(ADMIN_HTML).not.toMatch(/(?:Delete|Permanently delete) snapshot/);
+  });
+
+  it('loads readable snapshot contents from the authenticated detail endpoint', () => {
+    expect(ADMIN_HTML).toContain("api('/v1/admin/snapshots/'+encodeURIComponent(id)+'?limit=500&offset=0')");
+    expect(ADMIN_HTML).toContain('id="snapshotEntryRows"');
+    expect(ADMIN_HTML).toContain('id="closeSnapshotDetail"');
+    expect(ADMIN_HTML).toContain("row.deleted_at?'Deleted':'Active'");
+  });
+
+  it('uses selected-snapshot challenge and restore endpoints with the server phrase', () => {
+    expect(ADMIN_HTML).toContain("encodeURIComponent(id)+'/restore/challenge'");
+    expect(ADMIN_HTML).toContain("encodeURIComponent(id)+'/restore'");
+    expect(ADMIN_HTML).toContain('confirmation_phrase:ch.data.confirmation_phrase');
+    expect(ADMIN_HTML).toContain('Promise.all([loadLeaderboard(),loadSnapshots()])');
+  });
+});
