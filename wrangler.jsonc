@@ -16,7 +16,7 @@
     "ANDROID_STORE_URL": "https://www.cavemanvsdragon.com",
     "IOS_STORE_URL": "https://www.cavemanvsdragon.com",
     "SESSION_TTL_DAYS": "30",
-    "PASSWORD_ITERATIONS": "600000"
+    "PASSWORD_ITERATIONS": "100000"
   },
   "d1_databases": [
     {
@@ -45,7 +45,7 @@
         "ANDROID_STORE_URL": "https://www.cavemanvsdragon.com",
         "IOS_STORE_URL": "https://www.cavemanvsdragon.com",
         "SESSION_TTL_DAYS": "30",
-        "PASSWORD_ITERATIONS": "600000"
+        "PASSWORD_ITERATIONS": "100000"
       },
       "d1_databases": [
         {
@@ -71,7 +71,7 @@
         "ANDROID_STORE_URL": "https://www.cavemanvsdragon.com",
         "IOS_STORE_URL": "https://www.cavemanvsdragon.com",
         "SESSION_TTL_DAYS": "30",
-        "PASSWORD_ITERATIONS": "600000"
+        "PASSWORD_ITERATIONS": "100000"
       },
       "d1_databases": [
         {
