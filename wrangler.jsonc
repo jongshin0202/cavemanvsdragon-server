@@ -77,13 +77,13 @@
         {
           "binding": "DB",
           "database_name": "cavemanvsdragon-production",
-          "database_id": "REPLACE_WITH_PRODUCTION_DATABASE_ID",
+          "database_id": "16a0a9a0-98c7-4fc1-a1fc-87bf7bb1fa1f",
           "migrations_dir": "migrations"
         },
         {
           "binding": "BACKUP_DB",
           "database_name": "cavemanvsdragon-backup-production",
-          "database_id": "REPLACE_WITH_PRODUCTION_BACKUP_DATABASE_ID"
+          "database_id": "57c0df4d-d2dd-47db-ac5d-3608d126510a"
         }
       ]
     }
