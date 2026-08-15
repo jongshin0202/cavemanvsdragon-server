@@ -115,3 +115,24 @@ Allowed events: `install`, `app_open`, `session_start`, `session_end`, `game_sta
 | `POST` | `/v1/admin/backups/restore-leaderboard` | Rebuild primary from backup |
 
 The clear endpoint requires a live actor-bound challenge, both boolean confirmations, and exact phrase `CLEAR PRIMARY ONLY`. The restore endpoint similarly requires `RESTORE PRIMARY FROM BACKUP`. The dashboard presents two separate browser confirmation dialogs for each action.
+# Leaderboard recovery administration
+
+Every route below requires the existing bearer administrator token and actor
+header. Errors use the standard structured error envelope.
+
+| Endpoint | Handler | Validation / safety | Audit |
+|---|---|---|---|
+| `POST /v1/admin/leaderboard/:playerId/restore` | `restorePrimaryEntry` | Existing deleted row; parameterized ID lookup | Primary audit plus complete backup outbox state |
+| `GET /v1/admin/snapshots` | `listSnapshots` | Limit 1–100 | Read-only |
+| `GET /v1/admin/snapshots/:snapshotId` | `viewSnapshot` | ID, limit 1–500, offset | Read-only |
+| `POST /v1/admin/snapshots/:snapshotId/restore/challenge` | `createSnapshotRestoreChallenge` | Existing selected/latest-pre-clear source | Challenge record |
+| `POST /v1/admin/snapshots/:snapshotId/restore` | `restoreSnapshot` | Two booleans, bound single-use challenge, exact source phrase, complete source count | Primary restore audit with source and safety snapshot IDs |
+| `GET /v1/admin/backup-leaderboard` | `listBackupState` | Limit 1–500; active and deleted | Read-only |
+| `GET /v1/admin/backup-leaderboard/export.csv` | `exportBackupCsv` | Maximum 500 managed rows | Read-only |
+| `GET /v1/admin/backup-leaderboard/history` | `backupHistory` | Limit 1–200 | Read-only append-only history |
+| `POST /v1/admin/backup-leaderboard/challenges` | `createBackupChallenge` | Known action, validated target, five-minute actor binding | Challenge record |
+| `PATCH/DELETE /v1/admin/backup-leaderboard/:playerId` | `mutateBackup` | Strict row fields plus exact bound confirmation | Permanent backup action |
+| `POST /v1/admin/backup-leaderboard/:playerId/restore` | `mutateBackup` | Deleted target plus exact bound confirmation | Permanent backup action |
+| `POST /v1/admin/backup-leaderboard/reorder` | `reorderBackup` | All active IDs exactly once, max 500, exact count-bound confirmation | Permanent before/after order action |
+| `POST /v1/admin/backup-leaderboard/clear` | `clearBackup` | Two stages and `CLEAR BACKUP PERMANENTLY` | Permanent backup action plus reconciled primary audit |
+| `POST /v1/admin/backups/restore-leaderboard` | `restorePrimaryFromManagedBackup` | Two confirmations, complete managed-source validation, staging | Primary restore audit with safety snapshot ID |

@@ -31,6 +31,28 @@ export const ADMIN_HTML = String.raw`<!doctype html>
     <div id="notice" class="notice">Enter the admin token to begin.</div>
   </section>
 
+  <section class="panel" id="primarySnapshots">
+    <h2>Primary Snapshots</h2>
+    <p>Immutable, timestamped snapshots include active and soft-deleted entries. Every exact replacement first creates a restorable pre-replace safety snapshot.</p>
+    <div class="toolbar"><button id="snapshots">List snapshots</button><button id="latestPreClear" class="safe">Restore latest pre-clear snapshot</button></div>
+    <pre id="snapshotData" class="metrics" hidden></pre>
+  </section>
+
+  <section class="panel" id="backupLeaderboard">
+    <h2>Backup Leaderboard — Independent Managed State</h2>
+    <p><strong>This is the independent backup leaderboard state. Changes made here are permanent and have no additional application-level backup or Undo.</strong></p>
+    <p>Raw append-only backup event history remains immutable and is not edited by these controls. D1 Time Travel is infrastructure recovery, not an application Undo button.</p>
+    <div class="toolbar"><button id="backupList">Refresh/list backup leaderboard</button><button id="backupSaveOrder">Save backup displayed order</button><button id="backupHistory">Backup admin history</button><button id="backupExport">Export backup leaderboard CSV</button></div>
+    <div class="table-wrap"><table><thead><tr><th>Order</th><th>Player</th><th>Name</th><th>Score</th><th>Level</th><th>Verification</th><th>Admin note</th><th>Latest action</th><th>Actions</th></tr></thead><tbody id="backupRows"></tbody></table></div>
+    <pre id="backupData" class="metrics" hidden></pre>
+  </section>
+
+  <section class="panel danger-zone" id="backupDanger">
+    <h2>Backup Danger Zone</h2>
+    <p>Clear Backup Global Leaderboard permanently deactivates only managed backup state. Primary, accounts, primary snapshots, primary audit history, and raw backup events remain unchanged. Backup-based primary restoration will no longer recover cleared entries. There is no application-level Undo.</p>
+    <button id="clearBackup" class="danger">Clear Backup Global Leaderboard</button>
+  </section>
+
   <section class="panel">
     <div class="toolbar">
       <button id="analytics">Load analytics</button>
@@ -67,6 +89,7 @@ export const ADMIN_HTML = String.raw`<!doctype html>
   var metrics=document.getElementById('metrics');
   var undoButton=document.getElementById('undo');
   var displayed=[];
+  var backupDisplayed=[];
   var lastAuditId=null;
   tokenInput.value=sessionStorage.getItem('cvd.adminToken')||'';
   actorInput.value=sessionStorage.getItem('cvd.adminActor')||'admin';
@@ -98,8 +121,8 @@ export const ADMIN_HTML = String.raw`<!doctype html>
       rankWrap.appendChild(button('↑',function(){if(index>0){var x=displayed[index-1];displayed[index-1]=displayed[index];displayed[index]=x;renderRows();}}));
       rankWrap.appendChild(button('↓',function(){if(index<displayed.length-1){var x=displayed[index+1];displayed[index+1]=displayed[index];displayed[index]=x;renderRows();}}));
       var actions=document.createElement('div');actions.className='row-actions';
-      actions.appendChild(button('Save',async function(){await saveRow(tr,row.player_id);},'primary'));
-      actions.appendChild(button('Delete',async function(){await deleteRow(row.player_id);},'danger'));
+      if(row.deleted_at){actions.appendChild(button('Restore',async function(){await restoreRow(row.player_id);},'safe'));}
+      else{actions.appendChild(button('Save',async function(){await saveRow(tr,row.player_id);},'primary'));actions.appendChild(button('Delete',async function(){await deleteRow(row.player_id);},'danger'));}
       tr.appendChild(cell(String(index+1)));tr.appendChild(cell(name));tr.appendChild(cell(score));tr.appendChild(cell(level));tr.appendChild(cell(achieved));
       tr.appendChild(cell(row.source_platform+(row.web_source?' / '+row.web_source:'')));tr.appendChild(cell(row.device_type));tr.appendChild(cell(row.verification_status));
       tr.appendChild(cell(manual));tr.appendChild(cell(note));var actionCell=cell(rankWrap);actionCell.appendChild(actions);tr.appendChild(actionCell);rowsEl.appendChild(tr);
@@ -119,6 +142,7 @@ export const ADMIN_HTML = String.raw`<!doctype html>
     try{var result=await api('/v1/admin/leaderboard/'+encodeURIComponent(playerId),{method:'DELETE',body:JSON.stringify({reason:'Admin dashboard delete'})});setLastAudit(result.data.audit_id);setNotice('Entry deleted.','success');await loadLeaderboard();}
     catch(error){setNotice(error.message,'error');}
   }
+  async function restoreRow(playerId){if(!window.confirm('Restore only this primary entry with its saved score and metadata?'))return;try{var r=await api('/v1/admin/leaderboard/'+encodeURIComponent(playerId)+'/restore',{method:'POST',body:JSON.stringify({})});setLastAudit(r.data.audit_id);setNotice('Entry restored and queued for normal backup replication.','success');await loadLeaderboard();}catch(e){setNotice(e.message,'error');}}
   document.getElementById('saveToken').addEventListener('click',function(){sessionStorage.setItem('cvd.adminToken',tokenInput.value);sessionStorage.setItem('cvd.adminActor',actorInput.value||'admin');setNotice('Token stored for this browser tab only.','success');loadLeaderboard();});
   document.getElementById('refresh').addEventListener('click',loadLeaderboard);
   document.getElementById('saveOrder').addEventListener('click',async function(){try{var ids=displayed.filter(function(x){return !x.deleted_at;}).map(function(x){return x.player_id;});var result=await api('/v1/admin/leaderboard/reorder',{method:'POST',body:JSON.stringify({player_ids:ids,reason:'Admin dashboard reorder'})});setLastAudit(result.data.audit_id);setNotice('Leaderboard order saved.','success');await loadLeaderboard();}catch(error){setNotice(error.message,'error');}});
@@ -138,6 +162,17 @@ export const ADMIN_HTML = String.raw`<!doctype html>
     }catch(error){setNotice(error.message,'error');}
   });
   document.getElementById('audit').addEventListener('click',function(){showJson('/v1/admin/audit?limit=100');});
+  document.getElementById('snapshots').addEventListener('click',function(){showJson('/v1/admin/snapshots?limit=100');});
+  async function loadBackupRows(){try{var r=await api('/v1/admin/backup-leaderboard?limit=500');backupDisplayed=r.data;renderBackupRows();setNotice('Loaded independent managed backup state.','success');}catch(e){setNotice(e.message,'error');}}
+  async function permanentBackup(action,target,payload,path,method){var phrase='PERMANENTLY '+action.toUpperCase()+' '+target;var accepted=window.confirm(action.toUpperCase()+' backup entry '+target+'?\n\nThis change is permanent and has no application Undo.');if(!accepted)return;var ch=await api('/v1/admin/backup-leaderboard/challenges',{method:'POST',body:JSON.stringify({action:action,target_id:target})});if(!window.confirm('Final confirmation: '+action+' '+target+'.\n\nPermanent; no application Undo.'))return;payload=Object.assign({},payload,{challenge_id:ch.data.challenge_id,confirmation:true,confirmation_phrase:phrase});await api(path,{method:method,body:JSON.stringify(payload)});await loadBackupRows();}
+  function renderBackupRows(){var el=document.getElementById('backupRows');el.textContent='';backupDisplayed.forEach(function(row,index){var tr=document.createElement('tr');if(row.deleted_at)tr.className='deleted';var name=input(row.display_name);var score=input(row.best_score,'number');var level=input(row.level==null?'':row.level,'number');var verification=input(row.verification_status);var note=input(row.admin_note||'');var actions=document.createElement('div');actions.className='row-actions';actions.appendChild(button('↑',function(){if(index){var x=backupDisplayed[index-1];backupDisplayed[index-1]=row;backupDisplayed[index]=x;renderBackupRows();}}));actions.appendChild(button('↓',function(){if(index<backupDisplayed.length-1){var x=backupDisplayed[index+1];backupDisplayed[index+1]=row;backupDisplayed[index]=x;renderBackupRows();}}));if(row.deleted_at)actions.appendChild(button('Restore permanently',function(){permanentBackup('restore',row.player_id,{},'/v1/admin/backup-leaderboard/'+encodeURIComponent(row.player_id)+'/restore','POST');},'safe'));else{actions.appendChild(button('Save permanently',function(){permanentBackup('edit',row.player_id,{display_name:name.value,best_score:Number(score.value),level:level.value===''?null:Number(level.value),verification_status:verification.value,admin_note:note.value},'/v1/admin/backup-leaderboard/'+encodeURIComponent(row.player_id),'PATCH');},'primary'));actions.appendChild(button('Deactivate permanently',function(){permanentBackup('delete',row.player_id,{},'/v1/admin/backup-leaderboard/'+encodeURIComponent(row.player_id),'DELETE');},'danger'));}tr.appendChild(cell(String(index+1)));tr.appendChild(cell(row.player_id));tr.appendChild(cell(name));tr.appendChild(cell(score));tr.appendChild(cell(level));tr.appendChild(cell(verification));tr.appendChild(cell(note));tr.appendChild(cell(row.latest_action_type+' / '+row.latest_action_at));tr.appendChild(cell(actions));el.appendChild(tr);});}
+  document.getElementById('backupList').addEventListener('click',loadBackupRows);
+  document.getElementById('backupSaveOrder').addEventListener('click',function(){var ids=backupDisplayed.filter(function(x){return !x.deleted_at;}).map(function(x){return x.player_id;});permanentBackup('reorder',String(ids.length),{player_ids:ids},'/v1/admin/backup-leaderboard/reorder','POST');});
+  document.getElementById('backupHistory').addEventListener('click',function(){showJson('/v1/admin/backup-leaderboard/history?limit=100');});
+  document.getElementById('backupExport').addEventListener('click',async function(){try{var r=await fetch('/v1/admin/backup-leaderboard/export.csv',{headers:authHeaders(false)});if(!r.ok)throw new Error('Backup export failed');var blob=await r.blob(),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='backup-leaderboard.csv';a.click();URL.revokeObjectURL(url);}catch(e){setNotice(e.message,'error');}});
+  async function restoreChosenSnapshot(id){var first=window.confirm('SNAPSHOT RESTORE CONFIRMATION 1 OF 2\n\nRestore selected snapshot '+id+' in exact replace mode?');if(!first)return;try{var ch=await api('/v1/admin/snapshots/'+encodeURIComponent(id)+'/restore/challenge',{method:'POST',body:'{}'});id=ch.data.snapshot_id;var second=window.confirm('SNAPSHOT RESTORE CONFIRMATION 2 OF 2 — FINAL\n\nSelected snapshot: '+id+'\nCurrent primary state will first be snapshotted automatically. Primary state will then be replaced exactly. BACKUP_DB will not be modified.');if(!second)return;var r=await api('/v1/admin/snapshots/'+encodeURIComponent(id)+'/restore',{method:'POST',body:JSON.stringify({challenge_id:ch.data.challenge_id,confirmation_1:true,confirmation_2:true,confirmation_phrase:'RESTORE SNAPSHOT '+id})});setLastAudit(r.data.audit_id);setNotice('Exact snapshot restore complete; safety snapshot '+r.data.safety_snapshot_id+' is restorable.','success');await loadLeaderboard();}catch(e){setNotice(e.message,'error');}}
+  document.getElementById('latestPreClear').addEventListener('click',function(){restoreChosenSnapshot('latest-pre-clear');});
+  document.getElementById('clearBackup').addEventListener('click',async function(){var one=window.confirm('BACKUP CONFIRMATION 1 OF 2\n\nPermanently deactivate every managed backup leaderboard entry? Primary remains unchanged; raw events remain immutable; there is no application Undo.');if(!one)return;try{var ch=await api('/v1/admin/backup-leaderboard/challenges',{method:'POST',body:JSON.stringify({action:'clear',target_id:'global'})});var typed=window.prompt('BACKUP CONFIRMATION 2 OF 2 — FINAL\n\nType exactly: CLEAR BACKUP PERMANENTLY');if(typed!=='CLEAR BACKUP PERMANENTLY')return;var r=await api('/v1/admin/backup-leaderboard/clear',{method:'POST',body:JSON.stringify({challenge_id:ch.data.challenge_id,confirmation:true,confirmation_1:true,confirmation_2:true,confirmation_phrase:typed})});setNotice('Permanently cleared '+r.data.affected_entries+' managed backup entries; primary unchanged.','success');}catch(e){setNotice(e.message,'error');}});
   undoButton.addEventListener('click',async function(){if(!lastAuditId||!window.confirm('Undo the most recent admin action from this tab?'))return;try{await api('/v1/admin/audit/'+encodeURIComponent(lastAuditId)+'/undo',{method:'POST',body:JSON.stringify({})});setLastAudit(null);setNotice('Admin action undone.','success');await loadLeaderboard();}catch(error){setNotice(error.message,'error');}});
 
   document.getElementById('clear').addEventListener('click',async function(){

@@ -12,7 +12,7 @@
     "db:migrate:local": "wrangler d1 migrations apply DB --local",
     "db:migrate:dev": "wrangler d1 migrations apply DB --env dev --remote",
     "db:migrate:prod": "wrangler d1 migrations apply DB --env production --remote",
-    "backup:migrate:local": "wrangler d1 execute BACKUP_DB --local --file=backup-migrations/0001_backup.sql",
+    "backup:migrate:local": "wrangler d1 execute BACKUP_DB --local --file=backup-migrations/0001_backup.sql && wrangler d1 execute BACKUP_DB --local --file=backup-migrations/0002_managed_leaderboard.sql",
     "check": "npm run typecheck && npm test"
   },
   "engines": {

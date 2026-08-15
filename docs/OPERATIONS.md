@@ -91,3 +91,60 @@ This is intentionally different from an admin leaderboard soft delete or global 
 ## Scheduled maintenance
 
 The five-minute scheduled handler flushes up to 500 pending backup mutations, removes expired rate-limit windows, removes old revoked/expired sessions, and cleans used/expired admin confirmation challenges.
+# Leaderboard snapshots and managed backup operations
+
+## Lifecycle and boundaries
+
+Primary snapshot tables retain immutable pre-clear and pre-replace points. Primary clear inserts the complete snapshot before soft deletion in one batch. Snapshot restore validates entry count; managed-backup restore validates and stages its cross-binding source. Both then create a safety snapshot and exactly replace primary in one atomic batch. Deleted source rows remain deleted.
+
+Managed backup state is independently administrable. Raw `backup_events` remains append-only forensic history except privacy redaction, and `backup_admin_actions` permanently records direct administration. D1 Time Travel is infrastructure recovery, not application Undo.
+
+## Confirmations and recovery
+
+Primary clear uses `CLEAR PRIMARY ONLY`, backup-based primary restore uses `RESTORE PRIMARY FROM BACKUP`, and selected snapshots use `RESTORE SNAPSHOT <snapshot-id>`. Backup row challenges last five minutes and are single-use/bound to actor, action, and target; phrases are `PERMANENTLY <ACTION> <player-id>`. Backup clear requires two confirmations and exactly **`CLEAR BACKUP PERMANENTLY`**. There is no backup application Undo.
+
+Recover a clear with **Primary Snapshots → Restore latest pre-clear**. For point-in-time recovery, view and select a snapshot. For backup recovery, inspect managed state and choose Restore primary from backup. Save the returned safety snapshot ID; restoring it reverses an unwanted replacement. Clearing primary leaves backup recovery intact. Clearing managed backup leaves primary, accounts, snapshots, audit, and events intact, but managed-backup restoration will preserve those rows as deleted.
+
+## Migration and rollout
+
+```sh
+npm run db:migrate:local
+npm run backup:migrate:local
+# Approved remote rollout only:
+npx wrangler d1 migrations apply DB --env production --remote
+npx wrangler d1 execute BACKUP_DB --env production --remote --file=backup-migrations/0002_managed_leaderboard.sql
+```
+
+Migration 0002 prefers complete `leaderboard_entry` snapshots and preserves deletion state. Old score-submission-only history cannot reconstruct display names, notes, manual order, verification decisions, later edits, or deletion state; its best-score fallback is necessarily lossy for those fields and must be reviewed/backfilled before exact restore. Existing complete development state, including CAVE TEST, remains recoverable.
+
+## Post-deployment smoke test
+
+1. Confirm both schema versions are 2; list snapshots and managed backup state.
+2. Create/update a disposable score, flush the outbox, and verify one raw event plus a complete managed row.
+3. Soft-delete and row-restore it; verify metadata and managed state.
+4. In a disposable environment, clear primary; verify the complete pre-clear snapshot and unchanged backup, then restore it exactly.
+5. Reject a wrong backup phrase, accept a fresh exact phrase once, reject reuse, and verify one append-only admin action.
+6. In a disposable environment clear managed backup; verify primary, snapshots, accounts, and raw events are unchanged.
+7. Restore the safety snapshot and compare deletion state, order, values, notes, timestamps, metadata, and verification status.
+
+## Cross-database backup-clear reconciliation
+
+D1 bindings cannot share a transaction, and the application does **not** claim
+cross-database atomicity. Backup clear therefore uses this explicit order:
+
+1. Validate the actor/action/target-bound challenge and exact phrase.
+2. In one `BACKUP_DB` batch, deactivate managed rows, append the uniquely
+   challenge-bound `backup_admin_actions` row, reserve a stable primary audit
+   ID, and consume the challenge.
+3. Insert the corresponding primary audit with `INSERT OR IGNORE` using that
+   stable ID.
+4. Mark the backup action's `primary_audit_synced_at` only after step 3 works.
+
+If step 2 fails, nothing is committed and the request fails. If step 3 or 4
+fails, the permanent backup change is already committed, the API returns a
+structured `503 backup_mutation_committed_audit_pending` rather than reporting
+success, and the same request may be retried solely to reconcile the reserved
+audit. The unique challenge constraint prevents a duplicate permanent action;
+the stable audit ID makes primary insertion idempotent. Once reconciliation is
+marked complete, challenge reuse is rejected normally. Operators should alert
+on the pending error and retry before performing another backup mutation.

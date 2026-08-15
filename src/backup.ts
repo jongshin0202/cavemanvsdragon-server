@@ -56,7 +56,7 @@ async function applyBackupEvent(env: Env, row: BackupOutboxRow): Promise<void> {
     return;
   }
 
-  await env.BACKUP_DB.batch([
+  const statements: D1PreparedStatement[] = [
     env.BACKUP_DB.prepare(
       `INSERT OR IGNORE INTO backup_events
         (source_outbox_id, entity_type, entity_id, subject_player_id, operation, payload_json, occurred_at, backed_up_at)
@@ -90,7 +90,34 @@ async function applyBackupEvent(env: Env, row: BackupOutboxRow): Promise<void> {
       row.operation,
       backedUpAt,
     ),
-  ]);
+  ];
+  // Managed state is independent from immutable forensic events. Only complete
+  // leaderboard payloads are projected; direct backup administration never
+  // changes backup_events.
+  if (row.entity_type === 'leaderboard_entry' && row.payload_json) {
+    let value: Record<string, unknown> | null = null;
+    try { value = JSON.parse(row.payload_json) as Record<string, unknown>; } catch { value = null; }
+    if (value && typeof value.best_score === 'number' && typeof value.display_name === 'string') {
+      const action = value.deleted_at ? 'soft_deleted' : (row.operation === 'delete' ? 'soft_deleted' : 'replicated');
+      statements.push(env.BACKUP_DB.prepare(`INSERT INTO managed_leaderboard_state
+        (player_id,display_name,best_score,level,achieved_at,updated_at,source_platform,web_source,
+         device_type,control_type,app_version,verification_status,manual_rank,admin_note,deleted_at,
+         latest_action_type,latest_action_at,source_action_id)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(player_id) DO UPDATE SET display_name=excluded.display_name,best_score=excluded.best_score,
+         level=excluded.level,achieved_at=excluded.achieved_at,updated_at=excluded.updated_at,
+         source_platform=excluded.source_platform,web_source=excluded.web_source,device_type=excluded.device_type,
+         control_type=excluded.control_type,app_version=excluded.app_version,verification_status=excluded.verification_status,
+         manual_rank=excluded.manual_rank,admin_note=excluded.admin_note,deleted_at=excluded.deleted_at,
+         latest_action_type=excluded.latest_action_type,latest_action_at=excluded.latest_action_at,source_action_id=excluded.source_action_id`).bind(
+        row.entity_id, value.display_name, value.best_score, value.level ?? null, value.achieved_at,
+        value.updated_at ?? row.occurred_at, value.source_platform, value.web_source ?? null, value.device_type,
+        value.control_type ?? null, value.app_version ?? null, value.verification_status ?? 'unverified',
+        value.manual_rank ?? null, value.admin_note ?? null, value.deleted_at ?? null, action, row.occurred_at, row.id,
+      ));
+    }
+  }
+  await env.BACKUP_DB.batch(statements);
 }
 
 export async function flushBackupOutbox(env: Env, limit = 100): Promise<{ processed: number; failed: number }> {

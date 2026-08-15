@@ -173,6 +173,16 @@ export async function submitScore(
       occurred_at: now,
     }),
   );
+  if (improved) {
+    statements.push(backupOutboxStatement(env.DB, {
+      entity_type: 'leaderboard_entry', entity_id: auth.player_id, subject_player_id: auth.player_id,
+      payload: { player_id: auth.player_id, display_name: auth.display_name, best_score: score, level,
+        achieved_at: submittedAt, updated_at: now, source_platform: meta.source_platform,
+        web_source: meta.web_source, device_type: meta.device_type, control_type: meta.control_type,
+        app_version: meta.app_version, verification_status: 'unverified', manual_rank: null,
+        admin_note: null, deleted_at: null }, occurred_at: now,
+    }));
+  }
   await env.DB.batch(statements);
   return { improved, entry: await getPlayerLeaderboardRow(env, auth.player_id), submission_id: submissionId };
 }

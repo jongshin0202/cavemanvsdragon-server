@@ -3,6 +3,7 @@ import { newId, readJson, safeIsoUtc, safeOptionalInteger, utcNow } from './http
 import { getLeaderboard } from './leaderboard';
 import { HttpError, type AdminAuth, type Env, type LeaderboardRow } from './types';
 import { validateDisplayName } from './validation';
+import { snapshotStatements } from './leaderboard-admin-safety';
 
 interface AuditRow {
   id: string;
@@ -255,6 +256,7 @@ export async function reorderLeaderboard(
   const now = utcNow();
   const auditId = newId();
   const after = playerIds.map((player_id, index) => ({ player_id, manual_rank: index + 1 }));
+  const completeRows = await Promise.all(playerIds.map((id) => adminLeaderboardRow(env, id)));
   const statements: D1PreparedStatement[] = [
     env.DB.prepare('UPDATE leaderboard_entries SET manual_rank = NULL, updated_at = ? WHERE deleted_at IS NULL').bind(now),
   ];
@@ -262,6 +264,11 @@ export async function reorderLeaderboard(
     statements.push(env.DB.prepare(
       'UPDATE leaderboard_entries SET manual_rank = ?, updated_at = ? WHERE player_id = ? AND deleted_at IS NULL',
     ).bind(row.manual_rank, now, row.player_id));
+    const complete = completeRows.find((entry) => entry?.player_id === row.player_id);
+    if (complete) statements.push(backupOutboxStatement(env.DB, {
+      entity_type: 'leaderboard_entry', entity_id: row.player_id, subject_player_id: row.player_id,
+      payload: { ...complete, manual_rank: row.manual_rank, updated_at: now }, occurred_at: now,
+    }));
   }
   statements.push(
     auditStatement(env, {
@@ -327,7 +334,7 @@ export async function clearPrimaryLeaderboard(
   request: Request,
   env: Env,
   admin: AdminAuth,
-): Promise<{ audit_id: string; batch_id: string; cleared_entries: number; backup_modified: false }> {
+): Promise<{ audit_id: string; batch_id: string; snapshot_id: string; cleared_entries: number; backup_modified: false }> {
   const body = await readJson<Record<string, unknown>>(request);
   if (
     typeof body.challenge_id !== 'string'
@@ -351,20 +358,22 @@ export async function clearPrimaryLeaderboard(
   const now = utcNow();
   const auditId = newId();
   const batchId = newId();
+  const snapshotId = newId();
   const reason = optionalText(body.reason, 500, 'reason');
 
   // Deliberately no backup_outbox row and no BACKUP_DB call here. This is the
   // product requirement: clear only the primary/global leaderboard while the
   // raw backup remains untouched and available for recovery.
   await env.DB.batch([
+    ...snapshotStatements(env, { id: snapshotId, actor: admin.actor, reason, trigger: 'pre_clear', source: auditId, createdAt: now }),
     auditStatement(env, {
       id: auditId,
       actor: admin.actor,
       action: 'leaderboard.clear_primary',
       targetType: 'leaderboard',
       targetId: batchId,
-      before: { active_entries: rowCount, batch_id: batchId },
-      after: { active_entries: 0, backup_modified: false, batch_id: batchId },
+      before: { active_entries: rowCount, batch_id: batchId, snapshot_id: snapshotId },
+      after: { active_entries: 0, backup_modified: false, batch_id: batchId, snapshot_id: snapshotId },
       reason,
       createdAt: now,
     }),
@@ -384,7 +393,7 @@ export async function clearPrimaryLeaderboard(
       'UPDATE admin_confirmation_challenges SET used_at = ? WHERE id = ?',
     ).bind(now, challenge.id),
   ]);
-  return { audit_id: auditId, batch_id: batchId, cleared_entries: rowCount, backup_modified: false };
+  return { audit_id: auditId, batch_id: batchId, snapshot_id: snapshotId, cleared_entries: rowCount, backup_modified: false };
 }
 
 interface BackupScorePayload {
