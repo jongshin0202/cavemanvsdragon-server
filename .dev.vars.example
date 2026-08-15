@@ -1,0 +1,6 @@
+# Copy to .dev.vars for local development. Never commit .dev.vars.
+ADMIN_API_TOKEN=replace-with-a-long-random-token
+RATE_LIMIT_SECRET=replace-with-a-different-long-random-secret
+# Optional: required only when a player supplies a recovery email.
+# Generate 32 random bytes and encode them as base64.
+RECOVERY_EMAIL_KEY=replace-with-32-byte-base64-key
