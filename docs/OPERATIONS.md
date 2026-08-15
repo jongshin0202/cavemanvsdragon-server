@@ -11,6 +11,8 @@ Never share primary or backup databases between development and production. The 
 
 Apply primary migrations with Wrangler's migration command. Apply the backup SQL only to the matching backup binding. Record the resulting database IDs in the correct Wrangler environment.
 
+Keep `PASSWORD_ITERATIONS` set to `100000` in every Worker environment. Account registration clamps the PBKDF2 work factor to exactly 100,000 because Cloudflare Workers Web Crypto rejects larger values, while the primary D1 schema rejects stored values below 100,000.
+
 ## Backup layers
 
 1. **D1 Time Travel** is automatic. Cloudflare documents minute-level restore within 30 days on Workers Paid and 7 days on Workers Free. A restore overwrites a database in place, cancels in-flight queries, and returns a prior bookmark that can undo the restore.

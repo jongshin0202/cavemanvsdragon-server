@@ -12,10 +12,12 @@ import {
   validateRecoveryEmail,
 } from './validation';
 
-function passwordIterations(env: Env): number {
-  const value = Number.parseInt(env.PASSWORD_ITERATIONS || '600000', 10);
-  const minimum = env.ENVIRONMENT === 'test' ? 100_000 : 600_000;
-  return Math.min(1_000_000, Math.max(minimum, Number.isFinite(value) ? value : 600_000));
+export function passwordIterations(env: Pick<Env, 'PASSWORD_ITERATIONS'>): number {
+  const workerMaximum = 100_000;
+  const databaseMinimum = 100_000;
+  const value = Number.parseInt(env.PASSWORD_ITERATIONS || String(workerMaximum), 10);
+  const configured = Number.isFinite(value) ? value : workerMaximum;
+  return Math.min(workerMaximum, Math.max(databaseMinimum, configured));
 }
 
 function referralCode(): string {

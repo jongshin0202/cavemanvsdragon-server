@@ -80,7 +80,7 @@ Set these secrets in `.dev.vars` locally and with `wrangler secret put` remotely
 - `RATE_LIMIT_SECRET`: independent random secret used to HMAC temporary IP rate-limit buckets. Raw IP values are never stored.
 - `RECOVERY_EMAIL_KEY`: optional 32-byte AES key encoded as base64; required when accepting a recovery email.
 
-Passwords use per-player salts and PBKDF2-HMAC-SHA256 with a production floor of 600,000 iterations, matching OWASP's current PBKDF2 guidance. Benchmark this in the deployed Worker before launch while retaining that minimum.
+Passwords use per-player salts and PBKDF2-HMAC-SHA256 with exactly 100,000 iterations. This is both the D1 schema minimum and the maximum supported by Cloudflare Workers Web Crypto; the server clamps the configured value to that safe Worker-compatible count.
 
 Before a remote deployment, create four D1 databases (development primary/backup and production primary/backup), replace the placeholder database IDs in `wrangler.jsonc`, and set the real development Worker subdomain.
 

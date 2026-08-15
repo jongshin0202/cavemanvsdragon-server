@@ -127,6 +127,11 @@ describe.sequential('Worker + D1 integration', () => {
     expect(payload.data.initial_score.improved).toBe(true);
     playerId = payload.data.player.id;
     playerToken = payload.data.session.token;
+    const db = await mf.getD1Database('DB');
+    const stored = await db.prepare(
+      'SELECT password_iterations FROM players WHERE id = ?',
+    ).bind(playerId).first<{ password_iterations: number }>();
+    expect(stored?.password_iterations).toBe(100_000);
   });
 
   it('keeps exactly one global entry per player and only the highest score', async () => {
