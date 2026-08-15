@@ -22,13 +22,13 @@
     {
       "binding": "DB",
       "database_name": "cavemanvsdragon-dev",
-      "database_id": "REPLACE_WITH_DEV_DATABASE_ID",
+      "database_id": "86c15215-a758-4313-bcb9-4638210a5a4b",
       "migrations_dir": "migrations"
     },
     {
       "binding": "BACKUP_DB",
       "database_name": "cavemanvsdragon-backup-dev",
-      "database_id": "REPLACE_WITH_DEV_BACKUP_DATABASE_ID"
+      "database_id": "8f7596cc-5fb0-417a-a247-0a90d8fd0697"
     }
   ],
   "triggers": {
@@ -51,13 +51,13 @@
         {
           "binding": "DB",
           "database_name": "cavemanvsdragon-dev",
-          "database_id": "REPLACE_WITH_DEV_DATABASE_ID",
+          "database_id": "86c15215-a758-4313-bcb9-4638210a5a4b",
           "migrations_dir": "migrations"
         },
         {
           "binding": "BACKUP_DB",
           "database_name": "cavemanvsdragon-backup-dev",
-          "database_id": "REPLACE_WITH_DEV_BACKUP_DATABASE_ID"
+          "database_id": "8f7596cc-5fb0-417a-a247-0a90d8fd0697"
         }
       ]
     },
