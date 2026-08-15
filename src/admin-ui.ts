@@ -19,16 +19,30 @@ export const ADMIN_HTML = String.raw`<!doctype html>
   <h1>Caveman Vs Dragon Server Admin</h1>
   <p>All times are UTC. Admin edits and deletions are audited. Account privacy deletion is permanent.</p>
 
-  <section class="panel">
+  <section class="panel" id="authentication">
+    <h2>Authentication</h2>
     <div class="toolbar">
       <label class="field"><span>Admin API token</span><input id="token" type="password" autocomplete="off" placeholder="Worker secret"></label>
       <label class="field"><span>Actor label</span><input id="actor" value="admin" maxlength="120"></label>
       <button id="saveToken" class="primary">Use token</button>
+    </div>
+    <div id="notice" class="notice">Enter the admin token to begin.</div>
+  </section>
+
+  <section class="panel" id="primaryLeaderboard">
+    <h2>Primary Global Leaderboard — Primary Database</h2>
+    <p>This is the live, public global leaderboard served from the primary database.</p>
+    <div class="toolbar">
       <button id="refresh">Refresh leaderboard</button>
       <button id="saveOrder">Save displayed order</button>
       <button id="export">Export CSV</button>
     </div>
-    <div id="notice" class="notice">Enter the admin token to begin.</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Rank</th><th>Name</th><th>Score</th><th>Level</th><th>Achieved UTC</th><th>Platform</th><th>Device</th><th>Status</th><th>Manual rank</th><th>Admin note</th><th>Actions</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
   </section>
 
   <section class="panel" id="primarySnapshots">
@@ -38,11 +52,30 @@ export const ADMIN_HTML = String.raw`<!doctype html>
     <pre id="snapshotData" class="metrics" hidden></pre>
   </section>
 
+  <section class="panel" id="primaryOperations">
+    <h2>Primary Operations and Recovery</h2>
+    <p>These controls inspect or change primary state. Restore primary from backup reads the backup database and changes the primary database; it does not change backup state.</p>
+    <div class="toolbar">
+      <button id="analytics">Load analytics</button>
+      <button id="audit">Audit history</button>
+      <button id="undo" class="safe" disabled>Undo last admin action</button>
+      <button id="restore" class="safe">Restore primary from backup</button>
+    </div>
+    <pre id="metrics" class="metrics" hidden></pre>
+  </section>
+
+  <section class="panel danger-zone" id="primaryDanger">
+    <h2>Primary Danger Zone</h2>
+    <p>This action clears only the <strong>primary global leaderboard</strong>. The redundant backup database is deliberately not changed. The primary action is an audited soft-delete and can be undone.</p>
+    <button id="clear" class="danger">Clear Global Leaderboard</button>
+    <p class="small">Pressing the button requires two separate confirmations before the API will accept the operation.</p>
+  </section>
+
   <section class="panel" id="backupLeaderboard">
-    <h2>Backup Leaderboard — Independent Managed State</h2>
+    <h2>Backup Global Leaderboard — Independent Backup Database</h2>
     <p><strong>This is the independent backup leaderboard state. Changes made here are permanent and have no additional application-level backup or Undo.</strong></p>
     <p>Raw append-only backup event history remains immutable and is not edited by these controls. D1 Time Travel is infrastructure recovery, not an application Undo button.</p>
-    <div class="toolbar"><button id="backupList">Refresh/list backup leaderboard</button><button id="backupSaveOrder">Save backup displayed order</button><button id="backupHistory">Backup admin history</button><button id="backupExport">Export backup leaderboard CSV</button></div>
+    <div class="toolbar"><button id="backupList">Refresh/list backup leaderboard</button><button id="backupSaveOrder">Save backup displayed order</button><button id="backupHistory">Backup admin history</button><button id="backupExport">Export backup leaderboard CSV</button><button id="backup">Backup status</button></div>
     <div class="table-wrap"><table><thead><tr><th>Order</th><th>Player</th><th>Name</th><th>Score</th><th>Level</th><th>Verification</th><th>Admin note</th><th>Latest action</th><th>Actions</th></tr></thead><tbody id="backupRows"></tbody></table></div>
     <pre id="backupData" class="metrics" hidden></pre>
   </section>
@@ -51,33 +84,6 @@ export const ADMIN_HTML = String.raw`<!doctype html>
     <h2>Backup Danger Zone</h2>
     <p>Clear Backup Global Leaderboard permanently deactivates only managed backup state. Primary, accounts, primary snapshots, primary audit history, and raw backup events remain unchanged. Backup-based primary restoration will no longer recover cleared entries. There is no application-level Undo.</p>
     <button id="clearBackup" class="danger">Clear Backup Global Leaderboard</button>
-  </section>
-
-  <section class="panel">
-    <div class="toolbar">
-      <button id="analytics">Load analytics</button>
-      <button id="backup">Backup status</button>
-      <button id="restore" class="safe">Restore primary from backup</button>
-      <button id="audit">Audit history</button>
-      <button id="undo" class="safe" disabled>Undo last admin action</button>
-    </div>
-    <pre id="metrics" class="metrics" hidden></pre>
-  </section>
-
-  <section class="panel">
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Rank</th><th>Name</th><th>Score</th><th>Level</th><th>Achieved UTC</th><th>Platform</th><th>Device</th><th>Status</th><th>Manual rank</th><th>Admin note</th><th>Actions</th></tr></thead>
-        <tbody id="rows"></tbody>
-      </table>
-    </div>
-  </section>
-
-  <section class="panel danger-zone">
-    <h2>Danger zone</h2>
-    <p>This action clears only the <strong>primary global leaderboard</strong>. The redundant backup database is deliberately not changed. The primary action is an audited soft-delete and can be undone.</p>
-    <button id="clear" class="danger">Clear Global Leaderboard</button>
-    <p class="small">Pressing the button requires two separate confirmations before the API will accept the operation.</p>
   </section>
 </main>
 <script>
@@ -147,9 +153,9 @@ export const ADMIN_HTML = String.raw`<!doctype html>
   document.getElementById('refresh').addEventListener('click',loadLeaderboard);
   document.getElementById('saveOrder').addEventListener('click',async function(){try{var ids=displayed.filter(function(x){return !x.deleted_at;}).map(function(x){return x.player_id;});var result=await api('/v1/admin/leaderboard/reorder',{method:'POST',body:JSON.stringify({player_ids:ids,reason:'Admin dashboard reorder'})});setLastAudit(result.data.audit_id);setNotice('Leaderboard order saved.','success');await loadLeaderboard();}catch(error){setNotice(error.message,'error');}});
   document.getElementById('export').addEventListener('click',async function(){try{var response=await fetch('/v1/admin/leaderboard/export.csv',{headers:authHeaders(false)});if(!response.ok)throw new Error('Export failed');var blob=await response.blob();var url=URL.createObjectURL(blob);var a=document.createElement('a');a.href=url;a.download='cavemanvsdragon-global-leaderboard.csv';a.click();URL.revokeObjectURL(url);setNotice('CSV exported.','success');}catch(error){setNotice(error.message,'error');}});
-  async function showJson(path){try{var result=await api(path);metrics.hidden=false;metrics.textContent=JSON.stringify(result.data,null,2);}catch(error){setNotice(error.message,'error');}}
+  async function showJson(path,output){try{var result=await api(path);output=output||metrics;output.hidden=false;output.textContent=JSON.stringify(result.data,null,2);}catch(error){setNotice(error.message,'error');}}
   document.getElementById('analytics').addEventListener('click',function(){showJson('/v1/admin/analytics/summary');});
-  document.getElementById('backup').addEventListener('click',function(){showJson('/v1/admin/backups/status');});
+  document.getElementById('backup').addEventListener('click',function(){showJson('/v1/admin/backups/status',document.getElementById('backupData'));});
   document.getElementById('restore').addEventListener('click',async function(){
     var first=window.confirm('RESTORE CONFIRMATION 1 OF 2\n\nRebuild the PRIMARY leaderboard from redundant backup score history?\n\nThe raw backup will remain unchanged.');
     if(!first)return;
@@ -162,13 +168,13 @@ export const ADMIN_HTML = String.raw`<!doctype html>
     }catch(error){setNotice(error.message,'error');}
   });
   document.getElementById('audit').addEventListener('click',function(){showJson('/v1/admin/audit?limit=100');});
-  document.getElementById('snapshots').addEventListener('click',function(){showJson('/v1/admin/snapshots?limit=100');});
+  document.getElementById('snapshots').addEventListener('click',function(){showJson('/v1/admin/snapshots?limit=100',document.getElementById('snapshotData'));});
   async function loadBackupRows(){try{var r=await api('/v1/admin/backup-leaderboard?limit=500');backupDisplayed=r.data;renderBackupRows();setNotice('Loaded independent managed backup state.','success');}catch(e){setNotice(e.message,'error');}}
   async function permanentBackup(action,target,payload,path,method){var phrase='PERMANENTLY '+action.toUpperCase()+' '+target;var accepted=window.confirm(action.toUpperCase()+' backup entry '+target+'?\n\nThis change is permanent and has no application Undo.');if(!accepted)return;var ch=await api('/v1/admin/backup-leaderboard/challenges',{method:'POST',body:JSON.stringify({action:action,target_id:target})});if(!window.confirm('Final confirmation: '+action+' '+target+'.\n\nPermanent; no application Undo.'))return;payload=Object.assign({},payload,{challenge_id:ch.data.challenge_id,confirmation:true,confirmation_phrase:phrase});await api(path,{method:method,body:JSON.stringify(payload)});await loadBackupRows();}
   function renderBackupRows(){var el=document.getElementById('backupRows');el.textContent='';backupDisplayed.forEach(function(row,index){var tr=document.createElement('tr');if(row.deleted_at)tr.className='deleted';var name=input(row.display_name);var score=input(row.best_score,'number');var level=input(row.level==null?'':row.level,'number');var verification=input(row.verification_status);var note=input(row.admin_note||'');var actions=document.createElement('div');actions.className='row-actions';actions.appendChild(button('↑',function(){if(index){var x=backupDisplayed[index-1];backupDisplayed[index-1]=row;backupDisplayed[index]=x;renderBackupRows();}}));actions.appendChild(button('↓',function(){if(index<backupDisplayed.length-1){var x=backupDisplayed[index+1];backupDisplayed[index+1]=row;backupDisplayed[index]=x;renderBackupRows();}}));if(row.deleted_at)actions.appendChild(button('Restore permanently',function(){permanentBackup('restore',row.player_id,{},'/v1/admin/backup-leaderboard/'+encodeURIComponent(row.player_id)+'/restore','POST');},'safe'));else{actions.appendChild(button('Save permanently',function(){permanentBackup('edit',row.player_id,{display_name:name.value,best_score:Number(score.value),level:level.value===''?null:Number(level.value),verification_status:verification.value,admin_note:note.value},'/v1/admin/backup-leaderboard/'+encodeURIComponent(row.player_id),'PATCH');},'primary'));actions.appendChild(button('Deactivate permanently',function(){permanentBackup('delete',row.player_id,{},'/v1/admin/backup-leaderboard/'+encodeURIComponent(row.player_id),'DELETE');},'danger'));}tr.appendChild(cell(String(index+1)));tr.appendChild(cell(row.player_id));tr.appendChild(cell(name));tr.appendChild(cell(score));tr.appendChild(cell(level));tr.appendChild(cell(verification));tr.appendChild(cell(note));tr.appendChild(cell(row.latest_action_type+' / '+row.latest_action_at));tr.appendChild(cell(actions));el.appendChild(tr);});}
   document.getElementById('backupList').addEventListener('click',loadBackupRows);
   document.getElementById('backupSaveOrder').addEventListener('click',function(){var ids=backupDisplayed.filter(function(x){return !x.deleted_at;}).map(function(x){return x.player_id;});permanentBackup('reorder',String(ids.length),{player_ids:ids},'/v1/admin/backup-leaderboard/reorder','POST');});
-  document.getElementById('backupHistory').addEventListener('click',function(){showJson('/v1/admin/backup-leaderboard/history?limit=100');});
+  document.getElementById('backupHistory').addEventListener('click',function(){showJson('/v1/admin/backup-leaderboard/history?limit=100',document.getElementById('backupData'));});
   document.getElementById('backupExport').addEventListener('click',async function(){try{var r=await fetch('/v1/admin/backup-leaderboard/export.csv',{headers:authHeaders(false)});if(!r.ok)throw new Error('Backup export failed');var blob=await r.blob(),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='backup-leaderboard.csv';a.click();URL.revokeObjectURL(url);}catch(e){setNotice(e.message,'error');}});
   async function restoreChosenSnapshot(id){var first=window.confirm('SNAPSHOT RESTORE CONFIRMATION 1 OF 2\n\nRestore selected snapshot '+id+' in exact replace mode?');if(!first)return;try{var ch=await api('/v1/admin/snapshots/'+encodeURIComponent(id)+'/restore/challenge',{method:'POST',body:'{}'});id=ch.data.snapshot_id;var second=window.confirm('SNAPSHOT RESTORE CONFIRMATION 2 OF 2 — FINAL\n\nSelected snapshot: '+id+'\nCurrent primary state will first be snapshotted automatically. Primary state will then be replaced exactly. BACKUP_DB will not be modified.');if(!second)return;var r=await api('/v1/admin/snapshots/'+encodeURIComponent(id)+'/restore',{method:'POST',body:JSON.stringify({challenge_id:ch.data.challenge_id,confirmation_1:true,confirmation_2:true,confirmation_phrase:'RESTORE SNAPSHOT '+id})});setLastAudit(r.data.audit_id);setNotice('Exact snapshot restore complete; safety snapshot '+r.data.safety_snapshot_id+' is restorable.','success');await loadLeaderboard();}catch(e){setNotice(e.message,'error');}}
   document.getElementById('latestPreClear').addEventListener('click',function(){restoreChosenSnapshot('latest-pre-clear');});
