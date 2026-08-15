@@ -40,7 +40,7 @@
       "vars": {
         "ENVIRONMENT": "development",
         "ALLOWED_ORIGINS": "https://www.cavemanvsdragon.com,http://localhost:5173,https://localhost,capacitor://localhost",
-        "PUBLIC_API_URL": "https://cavemanvsdragon-api-dev.REPLACE_WITH_SUBDOMAIN.workers.dev",
+        "PUBLIC_API_URL": "https://cavemanvsdragon-api-dev.jwshin1.workers.dev",
         "WEB_APP_URL": "https://www.cavemanvsdragon.com",
         "ANDROID_STORE_URL": "https://www.cavemanvsdragon.com",
         "IOS_STORE_URL": "https://www.cavemanvsdragon.com",
