@@ -1,0 +1,33 @@
+{
+  "name": "cavemanvsdragon-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local",
+    "db:migrate:dev": "wrangler d1 migrations apply DB --env dev --remote",
+    "db:migrate:prod": "wrangler d1 migrations apply DB --env production --remote",
+    "backup:migrate:local": "wrangler d1 execute BACKUP_DB --local --file=backup-migrations/0001_backup.sql",
+    "check": "npm run typecheck && npm test"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "hono": "^4.13.2"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260814.1",
+    "@types/node": "^26.2.0",
+    "esbuild": "^0.28.2",
+    "miniflare": "^5.20260811.1-alpha",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.123.0"
+  }
+}
