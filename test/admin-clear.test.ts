@@ -21,3 +21,35 @@ describe('global leaderboard clear safety', () => {
     expect(handler).toContain("confirmation_phrase !== 'CLEAR PRIMARY ONLY'");
   });
 });
+
+describe('admin dashboard section organization', () => {
+  it('renders the primary and backup sections in the required DOM order', () => {
+    const headings = [
+      '<h2>Authentication</h2>',
+      '<h2>Primary Global Leaderboard — Primary Database</h2>',
+      '<h2>Primary Snapshots</h2>',
+      '<h2>Primary Operations and Recovery</h2>',
+      '<h2>Primary Danger Zone</h2>',
+      '<h2>Backup Global Leaderboard — Independent Backup Database</h2>',
+      '<h2>Backup Danger Zone</h2>',
+    ];
+
+    const positions = headings.map((heading) => ADMIN_HTML.indexOf(heading));
+    expect(positions.every((position) => position >= 0)).toBe(true);
+    expect(positions).toEqual([...positions].sort((left, right) => left - right));
+  });
+
+  it('keeps each leaderboard table inside its labeled database section', () => {
+    const primaryStart = ADMIN_HTML.indexOf('id="primaryLeaderboard"');
+    const primaryRows = ADMIN_HTML.indexOf('id="rows"');
+    const snapshotsStart = ADMIN_HTML.indexOf('id="primarySnapshots"');
+    const backupStart = ADMIN_HTML.indexOf('id="backupLeaderboard"');
+    const backupRows = ADMIN_HTML.indexOf('id="backupRows"');
+    const backupDangerStart = ADMIN_HTML.indexOf('id="backupDanger"');
+
+    expect(primaryStart).toBeLessThan(primaryRows);
+    expect(primaryRows).toBeLessThan(snapshotsStart);
+    expect(backupStart).toBeLessThan(backupRows);
+    expect(backupRows).toBeLessThan(backupDangerStart);
+  });
+});
