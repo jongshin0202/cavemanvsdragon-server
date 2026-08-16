@@ -421,4 +421,81 @@ describe.sequential('Worker + D1 integration', () => {
     expect(await backupDb.prepare(`SELECT permanent_no_undo,primary_audit_synced_at FROM backup_admin_actions WHERE confirmation_challenge_id=?`).bind(ch.data.challenge_id).first()).toMatchObject({permanent_no_undo:1,primary_audit_synced_at:expect.any(String)});
     const retry=await mf.dispatchFetch(url,{method:'POST',headers:adminHeaders(),body:JSON.stringify(body)});expect(retry.status).toBe(409);expect((await backupDb.prepare('SELECT COUNT(*) total FROM backup_admin_actions WHERE confirmation_challenge_id=?').bind(ch.data.challenge_id).first<{total:number}>())!.total).toBe(1);
   });
+
+  it('purges managed backup state when a player permanently deletes the account', async () => {
+    const password = 'privacy-test-password';
+    const register = await mf.dispatchFetch('https://api.example/v1/accounts/register', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'CF-Connecting-IP': '203.0.113.77',
+      },
+      body: JSON.stringify({
+        name: 'Privacy1',
+        password,
+        initial_score: 4321,
+        initial_level: 2,
+        ...playerMeta,
+        installation_id: 'privacy_delete_installation_123456',
+      }),
+    });
+    expect(register.status).toBe(201);
+
+    const created = await json<{
+      player: { id: string };
+      session: { token: string };
+    }>(register);
+    const privacyPlayerId = created.data.player.id;
+    const privacyToken = created.data.session.token;
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(
+      await backupDb.prepare(
+        'SELECT player_id FROM managed_leaderboard_state WHERE player_id = ?',
+      ).bind(privacyPlayerId).first(),
+    ).toEqual({ player_id: privacyPlayerId });
+
+    const deletion = await mf.dispatchFetch('https://api.example/v1/account', {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer ' + privacyToken,
+      },
+      body: JSON.stringify({ password }),
+    });
+    expect(deletion.status).toBe(200);
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(
+      await mainDb.prepare('SELECT id FROM players WHERE id = ?')
+        .bind(privacyPlayerId).first(),
+    ).toBeNull();
+    expect(
+      await backupDb.prepare(
+        'SELECT player_id FROM managed_leaderboard_state WHERE player_id = ?',
+      ).bind(privacyPlayerId).first(),
+    ).toBeNull();
+    expect(
+      (await backupDb.prepare(
+        `SELECT COUNT(*) AS total
+         FROM backup_entity_snapshots
+         WHERE subject_player_id = ?`,
+      ).bind(privacyPlayerId).first<{ total: number }>())?.total,
+    ).toBe(0);
+    expect(
+      (await backupDb.prepare(
+        `SELECT COUNT(*) AS total
+         FROM backup_events
+         WHERE subject_player_id = ? AND payload_json IS NOT NULL`,
+      ).bind(privacyPlayerId).first<{ total: number }>())?.total,
+    ).toBe(0);
+    expect(
+      await backupDb.prepare(
+        'SELECT player_id FROM backup_privacy_deletions WHERE player_id = ?',
+      ).bind(privacyPlayerId).first(),
+    ).toEqual({ player_id: privacyPlayerId });
+  });
+
 });

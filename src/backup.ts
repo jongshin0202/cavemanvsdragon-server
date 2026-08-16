@@ -41,6 +41,9 @@ async function applyBackupEvent(env: Env, row: BackupOutboxRow): Promise<void> {
         'DELETE FROM backup_entity_snapshots WHERE subject_player_id = ?',
       ).bind(subject),
       env.BACKUP_DB.prepare(
+        'DELETE FROM managed_leaderboard_state WHERE player_id = ?',
+      ).bind(subject),
+      env.BACKUP_DB.prepare(
         `INSERT INTO backup_privacy_deletions (player_id, deleted_at, source_outbox_id)
          VALUES (?, ?, ?)
          ON CONFLICT(player_id) DO UPDATE SET
