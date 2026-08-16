@@ -66,7 +66,7 @@
       "vars": {
         "ENVIRONMENT": "production",
         "ALLOWED_ORIGINS": "https://www.cavemanvsdragon.com,https://localhost,capacitor://localhost",
-        "PUBLIC_API_URL": "https://api.cavemanvsdragon.com",
+        "PUBLIC_API_URL": "https://cavemanvsdragon-api.jwshin1.workers.dev",
         "WEB_APP_URL": "https://www.cavemanvsdragon.com",
         "ANDROID_STORE_URL": "https://www.cavemanvsdragon.com",
         "IOS_STORE_URL": "https://www.cavemanvsdragon.com",
