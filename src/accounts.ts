@@ -1,13 +1,14 @@
 import { createPlayerSession, requirePlayer, revokeCurrentSession } from './auth';
 import { backupOutboxStatement } from './backup';
-import { encryptRecoveryEmail, hashPassword, verifyPassword } from './crypto';
-import { newId, readJson, safeOptionalInteger, utcNow } from './http';
+import { encryptRecoveryEmail, hashPassword, randomToken, verifyPassword } from './crypto';
+import { cleanText, newId, readJson, requestGeography, safeInteger, safeIsoUtc, safeOptionalInteger, utcNow } from './http';
 import { submitScore } from './leaderboard';
 import { enforceRateLimit } from './rate-limit';
 import { HttpError, type Env, type PlayerAuth } from './types';
 import {
   parsePlatformMeta,
   validateDisplayName,
+  validateInstallationId,
   validatePassword,
   validateRecoveryEmail,
 } from './validation';
@@ -26,6 +27,163 @@ function referralCode(): string {
 
 function isUniqueConstraint(error: unknown): boolean {
   return error instanceof Error && /unique|constraint/i.test(error.message);
+}
+
+function deviceNormalizedName(playerId: string): string {
+  return `DEVICE_${playerId.replace(/-/g, '').toUpperCase()}`;
+}
+
+// Creates an invisible per-installation identity for frictionless leaderboard use.
+// The public name is never used as an authentication key, so duplicate display
+// names remain valid. The generated credential is returned once for local,
+// private storage by the game and is never shown to the player.
+export async function registerDevicePlayer(request: Request, env: Env): Promise<Record<string, unknown>> {
+  await enforceRateLimit(request, env, { routeKey: 'device-player-register', limit: 12, windowSeconds: 900 });
+  const body = await readJson<Record<string, unknown>>(request);
+  const name = validateDisplayName(body.name);
+  const installationId = validateInstallationId(body.installation_id);
+  const meta = parsePlatformMeta(body);
+  const initialScore = safeInteger(body.initial_score, 1, 99_999_999, 'initial_score');
+  const initialLevel = safeOptionalInteger(body.initial_level, 1, 10_000, 'initial_level');
+  const occurredAt = safeIsoUtc(body.occurred_at, 'occurred_at');
+
+  const existingInstallation = await env.DB.prepare(
+    'SELECT player_id FROM installations WHERE id = ? LIMIT 1',
+  ).bind(installationId).first<{ player_id: string | null }>();
+  if (existingInstallation) {
+    throw new HttpError(409, 'device_already_registered', 'This game installation already has a player identity.');
+  }
+
+  const deviceCredential = randomToken(32);
+  const credentials = await hashPassword(deviceCredential, passwordIterations(env));
+  const playerId = newId();
+  const normalizedName = deviceNormalizedName(playerId);
+  const now = utcNow();
+  const code = referralCode();
+  const geography = requestGeography(request);
+  const safeBackupPlayer = {
+    id: playerId,
+    display_name: name.display_name,
+    normalized_name: normalizedName,
+    password_hash: credentials.hash,
+    password_salt: credentials.salt,
+    password_iterations: credentials.iterations,
+    recovery_email_ciphertext: null,
+    recovery_email_iv: null,
+    recovery_email_hash: null,
+    created_at: now,
+    updated_at: now,
+  };
+
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO players
+        (id, display_name, normalized_name, password_hash, password_salt, password_iterations,
+         recovery_email_ciphertext, recovery_email_iv, recovery_email_hash, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)`,
+    ).bind(
+      playerId, name.display_name, normalizedName, credentials.hash, credentials.salt,
+      credentials.iterations, now, now,
+    ),
+    env.DB.prepare(
+      `INSERT INTO installations
+        (id, player_id, source_platform, web_source, device_type, device_model, os_name, os_version,
+         app_version, first_seen_at, last_seen_at, country_code, region_code)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(
+      installationId, playerId, meta.source_platform, meta.web_source, meta.device_type,
+      meta.device_model, meta.os_name, meta.os_version, meta.app_version, now, now,
+      geography.country_code, geography.region_code,
+    ),
+    env.DB.prepare(
+      'INSERT INTO referral_codes (code, player_id, campaign, created_at) VALUES (?, ?, ?, ?)',
+    ).bind(code, playerId, 'device-player', now),
+    backupOutboxStatement(env.DB, {
+      entity_type: 'player',
+      entity_id: playerId,
+      subject_player_id: playerId,
+      payload: safeBackupPlayer,
+      occurred_at: now,
+    }),
+    backupOutboxStatement(env.DB, {
+      entity_type: 'referral_code',
+      entity_id: code,
+      subject_player_id: playerId,
+      payload: { code, player_id: playerId, campaign: 'device-player', created_at: now },
+      occurred_at: now,
+    }),
+  ]);
+
+  const auth: PlayerAuth = {
+    session_id: '',
+    player_id: playerId,
+    display_name: name.display_name,
+    normalized_name: normalizedName,
+    password_hash: credentials.hash,
+    password_salt: credentials.salt,
+    password_iterations: credentials.iterations,
+  };
+  const initialScoreResult = await submitScore(
+    env,
+    request,
+    auth,
+    { score: initialScore, level: initialLevel, occurred_at: occurredAt },
+    meta,
+  );
+  const session = await createPlayerSession(env, playerId);
+
+  return {
+    player: {
+      id: playerId,
+      display_name: name.display_name,
+      referral_code: code,
+      created_at: now,
+    },
+    session,
+    device_credentials: {
+      player_id: playerId,
+      credential: deviceCredential,
+    },
+    initial_score: initialScoreResult,
+  };
+}
+
+// Re-establishes a session silently after the short-lived bearer session expires.
+// Both the hidden player ID and generated credential must match the installation.
+export async function createDevicePlayerSession(request: Request, env: Env): Promise<Record<string, unknown>> {
+  await enforceRateLimit(request, env, { routeKey: 'device-player-session', limit: 20, windowSeconds: 900 });
+  const body = await readJson<Record<string, unknown>>(request);
+  const playerId = cleanText(body.player_id, 64);
+  if (!playerId) throw new HttpError(400, 'invalid_player_id', 'Player identity is required.');
+  const installationId = validateInstallationId(body.installation_id);
+  const credential = validatePassword(body.credential);
+
+  const player = await env.DB.prepare(
+    `SELECT p.id, p.display_name, p.normalized_name, p.password_hash, p.password_salt,
+            p.password_iterations, p.created_at
+       FROM players p
+       JOIN installations i ON i.player_id = p.id
+      WHERE p.id = ? AND i.id = ? AND p.deleted_at IS NULL
+      LIMIT 1`,
+  ).bind(playerId, installationId).first<PlayerAuth & { id: string; created_at: string }>();
+
+  if (!player || !(await verifyPassword(
+    credential,
+    player.password_hash,
+    player.password_salt,
+    player.password_iterations,
+  ))) {
+    throw new HttpError(401, 'invalid_device_credentials', 'The saved game identity is invalid.');
+  }
+
+  return {
+    player: {
+      id: player.id,
+      display_name: player.display_name,
+      created_at: player.created_at,
+    },
+    session: await createPlayerSession(env, player.id),
+  };
 }
 
 export async function registerAccount(request: Request, env: Env): Promise<Record<string, unknown>> {
