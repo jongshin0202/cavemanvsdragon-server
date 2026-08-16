@@ -22,11 +22,13 @@ import {
 } from './leaderboard-admin-safety';
 import { ADMIN_HTML } from './admin-ui';
 import {
+  createDevicePlayerSession,
   deleteAccountPermanently,
   getAccount,
   loginAccount,
   logoutAccount,
   registerAccount,
+  registerDevicePlayer,
 } from './accounts';
 import { recordAnalytics } from './analytics';
 import { flushBackupOutbox } from './backup';
@@ -113,6 +115,16 @@ app.get('/v1/leaderboard', async (c) => {
   const limit = Math.min(100, Math.max(1, Number.parseInt(c.req.query('limit') || '20', 10) || 20));
   const offset = Math.max(0, Number.parseInt(c.req.query('offset') || '0', 10) || 0);
   return jsonOk(c, await getLeaderboard(c.env, limit, offset, false));
+});
+
+app.post('/v1/device-players/register', async (c) => {
+  const result = await registerDevicePlayer(c.req.raw, c.env);
+  c.executionCtx.waitUntil(flushBackupOutbox(c.env));
+  return jsonOk(c, result, 201);
+});
+
+app.post('/v1/device-players/session', async (c) => {
+  return jsonOk(c, await createDevicePlayerSession(c.req.raw, c.env));
 });
 
 app.post('/v1/accounts/register', async (c) => {

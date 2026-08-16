@@ -498,4 +498,69 @@ describe.sequential('Worker + D1 integration', () => {
     ).toEqual({ player_id: privacyPlayerId });
   });
 
+
+  it('creates invisible device identities with duplicate public names and silently restores sessions', async () => {
+    const registerDevice = async (installationId: string, score: number) => {
+      const response = await mf.dispatchFetch('https://api.example/v1/device-players/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.88' },
+        body: JSON.stringify({
+          ...playerMeta,
+          installation_id: installationId,
+          name: 'JONG',
+          initial_score: score,
+          initial_level: 2,
+        }),
+      });
+      expect(response.status).toBe(201);
+      return json<{
+        player: { id: string; display_name: string };
+        session: { token: string };
+        device_credentials: { player_id: string; credential: string };
+        initial_score: { improved: boolean };
+      }>(response);
+    };
+
+    const firstInstallation = 'device_installation_first_123456';
+    const secondInstallation = 'device_installation_second_12345';
+    const first = await registerDevice(firstInstallation, 31000);
+    const second = await registerDevice(secondInstallation, 32000);
+
+    expect(first.data.player.display_name).toBe('JONG');
+    expect(second.data.player.display_name).toBe('JONG');
+    expect(first.data.player.id).not.toBe(second.data.player.id);
+    expect(first.data.device_credentials.credential.length).toBeGreaterThanOrEqual(10);
+    expect(first.data.initial_score.improved).toBe(true);
+
+    const hiddenNames = await mainDb.prepare(
+      'SELECT display_name, normalized_name FROM players WHERE id IN (?, ?) ORDER BY id',
+    ).bind(first.data.player.id, second.data.player.id).all<{ display_name: string; normalized_name: string }>();
+    expect(hiddenNames.results.map((row) => row.display_name)).toEqual(['JONG', 'JONG']);
+    expect(new Set(hiddenNames.results.map((row) => row.normalized_name)).size).toBe(2);
+    expect(hiddenNames.results.every((row) => row.normalized_name.startsWith('DEVICE_'))).toBe(true);
+
+    const restored = await mf.dispatchFetch('https://api.example/v1/device-players/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.88' },
+      body: JSON.stringify({
+        player_id: first.data.device_credentials.player_id,
+        credential: first.data.device_credentials.credential,
+        installation_id: firstInstallation,
+      }),
+    });
+    expect(restored.status).toBe(200);
+    expect((await json<{ session: { token: string } }>(restored)).data.session.token).toBeTruthy();
+
+    const wrongInstallation = await mf.dispatchFetch('https://api.example/v1/device-players/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.88' },
+      body: JSON.stringify({
+        player_id: first.data.device_credentials.player_id,
+        credential: first.data.device_credentials.credential,
+        installation_id: secondInstallation,
+      }),
+    });
+    expect(wrongInstallation.status).toBe(401);
+  });
+
 });
