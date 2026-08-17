@@ -499,45 +499,63 @@ describe.sequential('Worker + D1 integration', () => {
   });
 
 
-  it('creates invisible device identities with duplicate public names and silently restores sessions', async () => {
-    const registerDevice = async (installationId: string, score: number) => {
-      const response = await mf.dispatchFetch('https://api.example/v1/device-players/register', {
+  it('reserves unique device leaderboard names and silently restores sessions', async () => {
+    const availability = async (name: string) => {
+      const response = await mf.dispatchFetch(
+        `https://api.example/v1/device-players/name-availability?name=${encodeURIComponent(name)}`,
+        { headers: { 'CF-Connecting-IP': '203.0.113.88' } },
+      );
+      expect(response.status).toBe(200);
+      return json<{ available: boolean; display_name: string }>(response);
+    };
+
+    const registerDevice = async (installationId: string, name: string, score: number) => {
+      return mf.dispatchFetch('https://api.example/v1/device-players/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.88' },
         body: JSON.stringify({
           ...playerMeta,
           installation_id: installationId,
-          name: 'JONG',
+          name,
           initial_score: score,
           initial_level: 2,
         }),
       });
-      expect(response.status).toBe(201);
-      return json<{
-        player: { id: string; display_name: string };
-        session: { token: string };
-        device_credentials: { player_id: string; credential: string };
-        initial_score: { improved: boolean };
-      }>(response);
     };
 
+    expect((await availability('JONG')).data).toEqual({
+      available: true,
+      display_name: 'JONG',
+    });
+
     const firstInstallation = 'device_installation_first_123456';
-    const secondInstallation = 'device_installation_second_12345';
-    const first = await registerDevice(firstInstallation, 31000);
-    const second = await registerDevice(secondInstallation, 32000);
+    const firstResponse = await registerDevice(firstInstallation, 'JONG', 31000);
+    expect(firstResponse.status).toBe(201);
+    const first = await json<{
+      player: { id: string; display_name: string };
+      session: { token: string };
+      device_credentials: { player_id: string; credential: string };
+      initial_score: { improved: boolean };
+    }>(firstResponse);
 
     expect(first.data.player.display_name).toBe('JONG');
-    expect(second.data.player.display_name).toBe('JONG');
-    expect(first.data.player.id).not.toBe(second.data.player.id);
     expect(first.data.device_credentials.credential.length).toBeGreaterThanOrEqual(10);
     expect(first.data.initial_score.improved).toBe(true);
+    expect((await availability(' jong ')).data.available).toBe(false);
 
-    const hiddenNames = await mainDb.prepare(
-      'SELECT display_name, normalized_name FROM players WHERE id IN (?, ?) ORDER BY id',
-    ).bind(first.data.player.id, second.data.player.id).all<{ display_name: string; normalized_name: string }>();
-    expect(hiddenNames.results.map((row) => row.display_name)).toEqual(['JONG', 'JONG']);
-    expect(new Set(hiddenNames.results.map((row) => row.normalized_name)).size).toBe(2);
-    expect(hiddenNames.results.every((row) => row.normalized_name.startsWith('DEVICE_'))).toBe(true);
+    const duplicate = await registerDevice(
+      'device_installation_duplicate_123',
+      'jong',
+      32000,
+    );
+    expect(duplicate.status).toBe(409);
+    expect((await json<never>(duplicate)).error?.code).toBe('name_unavailable');
+
+    expect(
+      await mainDb.prepare(
+        'SELECT display_name, normalized_name FROM players WHERE id = ?',
+      ).bind(first.data.player.id).first(),
+    ).toEqual({ display_name: 'JONG', normalized_name: 'JONG' });
 
     const restored = await mf.dispatchFetch('https://api.example/v1/device-players/session', {
       method: 'POST',
@@ -551,6 +569,13 @@ describe.sequential('Worker + D1 integration', () => {
     expect(restored.status).toBe(200);
     expect((await json<{ session: { token: string } }>(restored)).data.session.token).toBeTruthy();
 
+    const secondInstallation = 'device_installation_second_12345';
+    const secondResponse = await registerDevice(secondInstallation, 'JANE', 32000);
+    expect(secondResponse.status).toBe(201);
+    const second = await json<{
+      device_credentials: { player_id: string; credential: string };
+    }>(secondResponse);
+
     const wrongInstallation = await mf.dispatchFetch('https://api.example/v1/device-players/session', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.88' },
@@ -561,6 +586,7 @@ describe.sequential('Worker + D1 integration', () => {
       }),
     });
     expect(wrongInstallation.status).toBe(401);
+    expect(second.data.device_credentials.player_id).not.toBe(first.data.device_credentials.player_id);
   });
 
 });
