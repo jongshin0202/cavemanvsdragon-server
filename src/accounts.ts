@@ -29,14 +29,28 @@ function isUniqueConstraint(error: unknown): boolean {
   return error instanceof Error && /unique|constraint/i.test(error.message);
 }
 
-function deviceNormalizedName(playerId: string): string {
-  return `DEVICE_${playerId.replace(/-/g, '').toUpperCase()}`;
+export async function getDevicePlayerNameAvailability(
+  request: Request,
+  env: Env,
+): Promise<{ available: boolean; display_name: string }> {
+  await enforceRateLimit(request, env, {
+    routeKey: 'device-player-name-availability',
+    limit: 60,
+    windowSeconds: 60,
+  });
+  const name = validateDisplayName(new URL(request.url).searchParams.get('name'));
+  const existing = await env.DB.prepare(
+    `SELECT id
+       FROM players
+      WHERE normalized_name = ? OR UPPER(TRIM(display_name)) = ?
+      LIMIT 1`,
+  ).bind(name.normalized_name, name.normalized_name).first<{ id: string }>();
+  return { available: !existing, display_name: name.display_name };
 }
 
 // Creates an invisible per-installation identity for frictionless leaderboard use.
-// The public name is never used as an authentication key, so duplicate display
-// names remain valid. The generated credential is returned once for local,
-// private storage by the game and is never shown to the player.
+// The confirmed public name is globally unique and becomes the permanent identity
+// key. The generated credential remains private and is never shown to the player.
 export async function registerDevicePlayer(request: Request, env: Env): Promise<Record<string, unknown>> {
   await enforceRateLimit(request, env, { routeKey: 'device-player-register', limit: 12, windowSeconds: 900 });
   const body = await readJson<Record<string, unknown>>(request);
@@ -57,7 +71,16 @@ export async function registerDevicePlayer(request: Request, env: Env): Promise<
   const deviceCredential = randomToken(32);
   const credentials = await hashPassword(deviceCredential, passwordIterations(env));
   const playerId = newId();
-  const normalizedName = deviceNormalizedName(playerId);
+  const normalizedName = name.normalized_name;
+  const existingName = await env.DB.prepare(
+    `SELECT id
+       FROM players
+      WHERE normalized_name = ? OR UPPER(TRIM(display_name)) = ?
+      LIMIT 1`,
+  ).bind(normalizedName, normalizedName).first<{ id: string }>();
+  if (existingName) {
+    throw new HttpError(409, 'name_unavailable', 'That leaderboard name is already taken.');
+  }
   const now = utcNow();
   const code = referralCode();
   const geography = requestGeography(request);
@@ -75,44 +98,51 @@ export async function registerDevicePlayer(request: Request, env: Env): Promise<
     updated_at: now,
   };
 
-  await env.DB.batch([
-    env.DB.prepare(
-      `INSERT INTO players
-        (id, display_name, normalized_name, password_hash, password_salt, password_iterations,
-         recovery_email_ciphertext, recovery_email_iv, recovery_email_hash, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)`,
-    ).bind(
-      playerId, name.display_name, normalizedName, credentials.hash, credentials.salt,
-      credentials.iterations, now, now,
-    ),
-    env.DB.prepare(
-      `INSERT INTO installations
-        (id, player_id, source_platform, web_source, device_type, device_model, os_name, os_version,
-         app_version, first_seen_at, last_seen_at, country_code, region_code)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(
-      installationId, playerId, meta.source_platform, meta.web_source, meta.device_type,
-      meta.device_model, meta.os_name, meta.os_version, meta.app_version, now, now,
-      geography.country_code, geography.region_code,
-    ),
-    env.DB.prepare(
-      'INSERT INTO referral_codes (code, player_id, campaign, created_at) VALUES (?, ?, ?, ?)',
-    ).bind(code, playerId, 'device-player', now),
-    backupOutboxStatement(env.DB, {
-      entity_type: 'player',
-      entity_id: playerId,
-      subject_player_id: playerId,
-      payload: safeBackupPlayer,
-      occurred_at: now,
-    }),
-    backupOutboxStatement(env.DB, {
-      entity_type: 'referral_code',
-      entity_id: code,
-      subject_player_id: playerId,
-      payload: { code, player_id: playerId, campaign: 'device-player', created_at: now },
-      occurred_at: now,
-    }),
-  ]);
+  try {
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO players
+          (id, display_name, normalized_name, password_hash, password_salt, password_iterations,
+           recovery_email_ciphertext, recovery_email_iv, recovery_email_hash, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)`,
+      ).bind(
+        playerId, name.display_name, normalizedName, credentials.hash, credentials.salt,
+        credentials.iterations, now, now,
+      ),
+      env.DB.prepare(
+        `INSERT INTO installations
+          (id, player_id, source_platform, web_source, device_type, device_model, os_name, os_version,
+           app_version, first_seen_at, last_seen_at, country_code, region_code)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(
+        installationId, playerId, meta.source_platform, meta.web_source, meta.device_type,
+        meta.device_model, meta.os_name, meta.os_version, meta.app_version, now, now,
+        geography.country_code, geography.region_code,
+      ),
+      env.DB.prepare(
+        'INSERT INTO referral_codes (code, player_id, campaign, created_at) VALUES (?, ?, ?, ?)',
+      ).bind(code, playerId, 'device-player', now),
+      backupOutboxStatement(env.DB, {
+        entity_type: 'player',
+        entity_id: playerId,
+        subject_player_id: playerId,
+        payload: safeBackupPlayer,
+        occurred_at: now,
+      }),
+      backupOutboxStatement(env.DB, {
+        entity_type: 'referral_code',
+        entity_id: code,
+        subject_player_id: playerId,
+        payload: { code, player_id: playerId, campaign: 'device-player', created_at: now },
+        occurred_at: now,
+      }),
+    ]);
+  } catch (error) {
+    if (isUniqueConstraint(error)) {
+      throw new HttpError(409, 'name_unavailable', 'That leaderboard name is already taken.');
+    }
+    throw error;
+  }
 
   const auth: PlayerAuth = {
     session_id: '',
