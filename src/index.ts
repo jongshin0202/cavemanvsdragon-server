@@ -25,6 +25,7 @@ import {
   createDevicePlayerSession,
   deleteAccountPermanently,
   getAccount,
+  getDevicePlayerNameAvailability,
   loginAccount,
   logoutAccount,
   registerAccount,
@@ -115,6 +116,10 @@ app.get('/v1/leaderboard', async (c) => {
   const limit = Math.min(100, Math.max(1, Number.parseInt(c.req.query('limit') || '20', 10) || 20));
   const offset = Math.max(0, Number.parseInt(c.req.query('offset') || '0', 10) || 0);
   return jsonOk(c, await getLeaderboard(c.env, limit, offset, false));
+});
+
+app.get('/v1/device-players/name-availability', async (c) => {
+  return jsonOk(c, await getDevicePlayerNameAvailability(c.req.raw, c.env));
 });
 
 app.post('/v1/device-players/register', async (c) => {
