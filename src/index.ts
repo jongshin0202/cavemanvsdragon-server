@@ -39,14 +39,15 @@ import { cleanExpiredRateLimits, enforceRateLimit } from './rate-limit';
 import { createShare, openReferral } from './sharing';
 import { HttpError, type Env } from './types';
 import { parsePlatformMeta } from './validation';
+import { isAllowedOrigin } from './cors';
 
 type AppContext = { Bindings: Env };
 const app = new Hono<AppContext>();
 
 app.use('*', async (c, next) => {
   const origin = c.req.header('origin');
-  const allowed = new Set((c.env.ALLOWED_ORIGINS || '').split(',').map((value) => value.trim()).filter(Boolean));
-  if (origin && allowed.has(origin)) {
+  const originAllowed = isAllowedOrigin(origin, c.env.ALLOWED_ORIGINS || '');
+  if (origin && originAllowed) {
     c.header('Access-Control-Allow-Origin', origin);
     c.header('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Admin-Actor');
     c.header('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
@@ -59,7 +60,7 @@ app.use('*', async (c, next) => {
   c.header('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'; base-uri 'none'");
   c.header('Cache-Control', 'no-store');
   if (c.req.method === 'OPTIONS') {
-    if (origin && !allowed.has(origin)) return c.json({ ok: false, error: { code: 'origin_not_allowed' } }, 403);
+    if (origin && !originAllowed) return c.json({ ok: false, error: { code: 'origin_not_allowed' } }, 403);
     return c.body(null, 204);
   }
   await next();
