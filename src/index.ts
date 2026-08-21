@@ -23,6 +23,7 @@ import {
 import { ADMIN_HTML } from './admin-ui';
 import {
   createDevicePlayerSession,
+  createProfileDeviceSession,
   deleteAccountPermanently,
   getAccount,
   getDevicePlayerNameAvailability,
@@ -30,6 +31,7 @@ import {
   logoutAccount,
   registerAccount,
   registerDevicePlayer,
+  upgradeDevicePlayer,
 } from './accounts';
 import { recordAnalytics } from './analytics';
 import { flushBackupOutbox } from './backup';
@@ -139,6 +141,16 @@ app.post('/v1/accounts/register', async (c) => {
 });
 
 app.post('/v1/accounts/login', async (c) => jsonOk(c, await loginAccount(c.req.raw, c.env)));
+// Profile-named aliases make the game flow explicit while the account routes
+// remain supported for already-released clients.
+app.post('/v1/leaderboard-profiles/claim', async (c) => {
+  const result = await registerAccount(c.req.raw, c.env);
+  c.executionCtx.waitUntil(flushBackupOutbox(c.env));
+  return jsonOk(c, result, 201);
+});
+app.post('/v1/leaderboard-profiles/login', async (c) => jsonOk(c, await loginAccount(c.req.raw, c.env)));
+app.post('/v1/leaderboard-profiles/upgrade', async (c) => jsonOk(c, await upgradeDevicePlayer(c.req.raw, c.env)));
+app.post('/v1/leaderboard-profiles/session', async (c) => jsonOk(c, await createProfileDeviceSession(c.req.raw, c.env)));
 app.post('/v1/accounts/logout', async (c) => {
   await logoutAccount(c.req.raw, c.env);
   return jsonOk(c, { logged_out: true });
