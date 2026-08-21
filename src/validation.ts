@@ -62,6 +62,26 @@ export function validateRecoveryEmail(value: unknown): string | null {
   return email;
 }
 
+export function validateRecoveryQuestion(value: unknown): string | null {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string') throw new HttpError(400, 'invalid_recovery_question', 'Recovery question is invalid.');
+  const question = value.trim().replace(/\s+/g, ' ');
+  if (question.length < 8 || question.length > 120) {
+    throw new HttpError(400, 'invalid_recovery_question', 'Recovery question must be 8 to 120 characters.');
+  }
+  return question;
+}
+
+export function validateRecoveryAnswer(value: unknown): string | null {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string') throw new HttpError(400, 'invalid_recovery_answer', 'Recovery answer is invalid.');
+  const answer = value.trim().replace(/\s+/g, ' ').toLocaleLowerCase('en-US');
+  if (answer.length < 6 || answer.length > 128) {
+    throw new HttpError(400, 'invalid_recovery_answer', 'Recovery answer must be 6 to 128 characters.');
+  }
+  return answer;
+}
+
 function oneOf<T extends string>(value: unknown, allowed: readonly T[], field: string): T {
   if (typeof value !== 'string' || !allowed.includes(value as T)) {
     throw new HttpError(400, 'invalid_field', `${field} is invalid.`, { field, allowed });

@@ -17,6 +17,8 @@ Player authentication uses `Authorization: Bearer <opaque-session-token>`. Admin
 | `POST` | `/v1/leaderboard-profiles/login` | None | Alias for cross-device login |
 | `POST` | `/v1/leaderboard-profiles/upgrade` | Legacy session or device credential | Convert an old device-only name in place |
 | `POST` | `/v1/leaderboard-profiles/session` | Saved device credential | Refresh an expired bearer session without asking for the password |
+| `POST` | `/v1/leaderboard-profiles/recovery-question` | None | Return a configured personal recovery question |
+| `POST` | `/v1/leaderboard-profiles/recover-with-question` | Correct recovery answer | Connect the requesting installation to the profile |
 | `POST` | `/v1/accounts/logout` | Player | Revoke current session |
 | `GET` | `/v1/account` | Player | Current account summary |
 | `DELETE` | `/v1/account` | Player + password | Permanent privacy deletion |
@@ -32,6 +34,8 @@ Player authentication uses `Authorization: Bearer <opaque-session-token>`. Admin
   "name": "ROCK HERO",
   "password": "a-long-player-password",
   "recovery_email": "optional@example.com",
+  "recovery_question": "Where did I hide my secret stone?",
+  "recovery_answer": "Behind the waterfall",
   "initial_score": 12500,
   "initial_level": 3,
   "occurred_at": "2026-08-14T00:00:00Z",
@@ -89,6 +93,13 @@ Recovery email is optional, normalized, encrypted with AES-GCM, and never return
 No reset/request endpoint is exposed until an authenticated email-delivery service is
 configured; the field is future-ready and `recovery_email_configured` reports only a
 boolean.
+
+A personal recovery question and answer are also optional and must be supplied together.
+The normalized answer is stored only as a salted PBKDF2 hash and is never returned. Name
+availability exposes only `recovery_question_configured`; the question itself is returned
+by the separately rate-limited recovery-question route. Correctly answering it links only
+the requesting installation and returns its own revocable device credential. Verification
+is limited to five attempts per 15 minutes per rate-limit identity.
 
 ### Analytics event batch
 
