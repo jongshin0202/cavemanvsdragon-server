@@ -39,7 +39,7 @@
       "name": "cavemanvsdragon-api-dev",
       "vars": {
         "ENVIRONMENT": "development",
-        "ALLOWED_ORIGINS": "https://www.cavemanvsdragon.com,http://localhost:5173,https://localhost,capacitor://localhost",
+        "ALLOWED_ORIGINS": "https://www.cavemanvsdragon.com,https://cavemanvsdragon-git-feature-leade-bd8b84-jwshin1-5345s-projects.vercel.app,http://localhost:5173,https://localhost,capacitor://localhost",
         "PUBLIC_API_URL": "https://cavemanvsdragon-api-dev.jwshin1.workers.dev",
         "WEB_APP_URL": "https://www.cavemanvsdragon.com",
         "ANDROID_STORE_URL": "https://www.cavemanvsdragon.com",
