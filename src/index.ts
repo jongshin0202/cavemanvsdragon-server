@@ -27,12 +27,10 @@ import {
   deleteAccountPermanently,
   getAccount,
   getDevicePlayerNameAvailability,
-  getRecoveryQuestion,
   loginAccount,
   logoutAccount,
   registerAccount,
   registerDevicePlayer,
-  recoverWithPersonalQuestion,
   upgradeDevicePlayer,
 } from './accounts';
 import { recordAnalytics } from './analytics';
@@ -153,8 +151,6 @@ app.post('/v1/leaderboard-profiles/claim', async (c) => {
 app.post('/v1/leaderboard-profiles/login', async (c) => jsonOk(c, await loginAccount(c.req.raw, c.env)));
 app.post('/v1/leaderboard-profiles/upgrade', async (c) => jsonOk(c, await upgradeDevicePlayer(c.req.raw, c.env)));
 app.post('/v1/leaderboard-profiles/session', async (c) => jsonOk(c, await createProfileDeviceSession(c.req.raw, c.env)));
-app.post('/v1/leaderboard-profiles/recovery-question', async (c) => jsonOk(c, await getRecoveryQuestion(c.req.raw, c.env)));
-app.post('/v1/leaderboard-profiles/recover-with-question', async (c) => jsonOk(c, await recoverWithPersonalQuestion(c.req.raw, c.env)));
 app.post('/v1/accounts/logout', async (c) => {
   await logoutAccount(c.req.raw, c.env);
   return jsonOk(c, { logged_out: true });

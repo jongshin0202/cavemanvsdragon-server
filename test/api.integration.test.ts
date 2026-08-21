@@ -95,7 +95,6 @@ beforeAll(async () => {
   await applySql(mainDb, readFileSync(new URL('../migrations/0002_leaderboard_snapshots.sql', import.meta.url), 'utf8'));
   await applySql(mainDb, readFileSync(new URL('../migrations/0003_snapshot_archival.sql', import.meta.url), 'utf8'));
   await applySql(mainDb, readFileSync(new URL('../migrations/0004_leaderboard_profiles.sql', import.meta.url), 'utf8'));
-  await applySql(mainDb, readFileSync(new URL('../migrations/0005_personal_recovery_question.sql', import.meta.url), 'utf8'));
   await applySql(backupDb, readFileSync(new URL('../backup-migrations/0002_managed_leaderboard.sql', import.meta.url), 'utf8'));
 });
 
@@ -153,43 +152,6 @@ describe.sequential('Worker + D1 integration', () => {
       'SELECT password_iterations FROM players WHERE id = ?',
     ).bind(playerId).first<{ password_iterations: number }>();
     expect(stored?.password_iterations).toBe(100_000);
-  });
-
-  it('recovers a leaderboard profile with its optional personal question', async () => {
-    const name = 'Question1';
-    const register = await mf.dispatchFetch('https://api.example/v1/accounts/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.73' },
-      body: JSON.stringify({
-        name,
-        password: 'question-test-password',
-        recovery_question: 'Where is my secret stone?',
-        recovery_answer: 'Behind the waterfall',
-        ...playerMeta,
-        installation_id: 'question-origin-device-0001',
-      }),
-    });
-    expect(register.status).toBe(201);
-    const availability = await mf.dispatchFetch(`https://api.example/v1/device-players/name-availability?name=${name}`);
-    expect((await json<{ recovery_question_configured: boolean }>(availability)).data.recovery_question_configured).toBe(true);
-    const prompt = await mf.dispatchFetch('https://api.example/v1/leaderboard-profiles/recovery-question', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
-    });
-    expect((await json<{ recovery_question: string }>(prompt)).data.recovery_question).toBe('Where is my secret stone?');
-    const recovered = await mf.dispatchFetch('https://api.example/v1/leaderboard-profiles/recover-with-question', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.74' },
-      body: JSON.stringify({
-        name,
-        answer: '  BEHIND   THE WATERFALL ',
-        ...playerMeta,
-        installation_id: 'question-new-device-0002',
-      }),
-    });
-    expect(recovered.status).toBe(200);
-    const recoveredBody = await json<{ session: { token: string }; device_credentials: { credential: string } }>(recovered);
-    expect(recoveredBody.data.session.token).toBeTruthy();
-    expect(recoveredBody.data.device_credentials.credential).toBeTruthy();
   });
 
   it('keeps exactly one global entry per player and only the highest score', async () => {

@@ -10,9 +10,7 @@ import {
   validateDisplayName,
   validateInstallationId,
   validatePassword,
-  validateRecoveryAnswer,
   validateRecoveryEmail,
-  validateRecoveryQuestion,
 } from './validation';
 
 export function passwordIterations(env: Pick<Env, 'PASSWORD_ITERATIONS'>): number {
@@ -34,7 +32,7 @@ function isUniqueConstraint(error: unknown): boolean {
 export async function getDevicePlayerNameAvailability(
   request: Request,
   env: Env,
-): Promise<{ available: boolean; display_name: string; claim_state: 'available' | 'login_required' | 'legacy_upgrade_required'; requires_password: boolean; recovery_question_configured: boolean }> {
+): Promise<{ available: boolean; display_name: string; claim_state: 'available' | 'login_required' | 'legacy_upgrade_required'; requires_password: boolean }> {
   await enforceRateLimit(request, env, {
     routeKey: 'device-player-name-availability',
     limit: 60,
@@ -42,17 +40,16 @@ export async function getDevicePlayerNameAvailability(
   });
   const name = validateDisplayName(new URL(request.url).searchParams.get('name'));
   const existing = await env.DB.prepare(
-    `SELECT id, auth_kind, recovery_answer_hash
+    `SELECT id, auth_kind
        FROM players
       WHERE normalized_name = ? OR UPPER(TRIM(display_name)) = ?
       LIMIT 1`,
-  ).bind(name.normalized_name, name.normalized_name).first<{ id: string; auth_kind: 'password' | 'legacy_device'; recovery_answer_hash: string | null }>();
+  ).bind(name.normalized_name, name.normalized_name).first<{ id: string; auth_kind: 'password' | 'legacy_device' }>();
   return {
     available: !existing,
     display_name: name.display_name,
     claim_state: !existing ? 'available' : existing.auth_kind === 'password' ? 'login_required' : 'legacy_upgrade_required',
     requires_password: Boolean(existing),
-    recovery_question_configured: Boolean(existing?.recovery_answer_hash),
   };
 }
 
@@ -230,11 +227,6 @@ export async function registerAccount(request: Request, env: Env): Promise<Recor
   const name = validateDisplayName(body.name);
   const password = validatePassword(body.password);
   const recoveryEmail = validateRecoveryEmail(body.recovery_email);
-  const recoveryQuestion = validateRecoveryQuestion(body.recovery_question);
-  const recoveryAnswer = validateRecoveryAnswer(body.recovery_answer);
-  if (Boolean(recoveryQuestion) !== Boolean(recoveryAnswer)) {
-    throw new HttpError(400, 'incomplete_recovery_question', 'Provide both a recovery question and answer, or leave both blank.');
-  }
   const meta = parsePlatformMeta(body);
   const installationId = meta.installation_id ? validateInstallationId(meta.installation_id) : null;
   const initialScore = safeOptionalInteger(body.initial_score, 1, 99_999_999, 'initial_score');
@@ -242,9 +234,6 @@ export async function registerAccount(request: Request, env: Env): Promise<Recor
   const credentials = await hashPassword(password, passwordIterations(env));
   const encryptedEmail = recoveryEmail
     ? await encryptRecoveryEmail(recoveryEmail, env.RECOVERY_EMAIL_KEY)
-    : null;
-  const recoveryCredentials = recoveryAnswer
-    ? await hashPassword(recoveryAnswer, passwordIterations(env))
     : null;
   const playerId = newId();
   const now = utcNow();
@@ -265,10 +254,6 @@ export async function registerAccount(request: Request, env: Env): Promise<Recor
     recovery_email_ciphertext: encryptedEmail?.ciphertext ?? null,
     recovery_email_iv: encryptedEmail?.iv ?? null,
     recovery_email_hash: encryptedEmail?.hash ?? null,
-    recovery_question: recoveryQuestion,
-    recovery_answer_hash: recoveryCredentials?.hash ?? null,
-    recovery_answer_salt: recoveryCredentials?.salt ?? null,
-    recovery_answer_iterations: recoveryCredentials?.iterations ?? null,
     created_at: now,
     updated_at: now,
   };
@@ -277,15 +262,12 @@ export async function registerAccount(request: Request, env: Env): Promise<Recor
       env.DB.prepare(
         `INSERT INTO players
           (id, display_name, normalized_name, password_hash, password_salt, password_iterations,
-           auth_kind, recovery_email_ciphertext, recovery_email_iv, recovery_email_hash,
-           recovery_question, recovery_answer_hash, recovery_answer_salt, recovery_answer_iterations,
-           created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'password', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           auth_kind, recovery_email_ciphertext, recovery_email_iv, recovery_email_hash, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'password', ?, ?, ?, ?, ?)`,
       ).bind(
         playerId, name.display_name, name.normalized_name, credentials.hash, credentials.salt,
         credentials.iterations, encryptedEmail?.ciphertext ?? null, encryptedEmail?.iv ?? null,
-        encryptedEmail?.hash ?? null, recoveryQuestion, recoveryCredentials?.hash ?? null,
-        recoveryCredentials?.salt ?? null, recoveryCredentials?.iterations ?? null, now, now,
+        encryptedEmail?.hash ?? null, now, now,
       ),
       env.DB.prepare(
         'INSERT INTO referral_codes (code, player_id, campaign, created_at) VALUES (?, ?, ?, ?)',
@@ -348,7 +330,6 @@ export async function registerAccount(request: Request, env: Env): Promise<Recor
       id: playerId,
       display_name: name.display_name,
       recovery_email_configured: Boolean(recoveryEmail),
-      recovery_question_configured: Boolean(recoveryQuestion),
       referral_code: code,
       created_at: now,
     },
@@ -472,11 +453,6 @@ export async function upgradeDevicePlayer(request: Request, env: Env): Promise<R
   const name = validateDisplayName(body.name);
   const password = validatePassword(body.password);
   const recoveryEmail = validateRecoveryEmail(body.recovery_email);
-  const recoveryQuestion = validateRecoveryQuestion(body.recovery_question);
-  const recoveryAnswer = validateRecoveryAnswer(body.recovery_answer);
-  if (Boolean(recoveryQuestion) !== Boolean(recoveryAnswer)) {
-    throw new HttpError(400, 'incomplete_recovery_question', 'Provide both a recovery question and answer, or leave both blank.');
-  }
   const installationId = validateInstallationId(body.installation_id);
   const meta = parsePlatformMeta(body);
   const player = await env.DB.prepare(
@@ -500,18 +476,13 @@ export async function upgradeDevicePlayer(request: Request, env: Env): Promise<R
 
   const credentials = await hashPassword(password, passwordIterations(env));
   const encryptedEmail = recoveryEmail ? await encryptRecoveryEmail(recoveryEmail, env.RECOVERY_EMAIL_KEY) : null;
-  const recoveryCredentials = recoveryAnswer ? await hashPassword(recoveryAnswer, passwordIterations(env)) : null;
   const now = utcNow();
   try {
     await env.DB.prepare(
       `UPDATE players SET password_hash=?, password_salt=?, password_iterations=?, auth_kind='password',
-       recovery_email_ciphertext=?, recovery_email_iv=?, recovery_email_hash=?,
-       recovery_question=?, recovery_answer_hash=?, recovery_answer_salt=?, recovery_answer_iterations=?,
-       updated_at=? WHERE id=?`,
+       recovery_email_ciphertext=?, recovery_email_iv=?, recovery_email_hash=?, updated_at=? WHERE id=?`,
     ).bind(credentials.hash, credentials.salt, credentials.iterations, encryptedEmail?.ciphertext ?? null,
-      encryptedEmail?.iv ?? null, encryptedEmail?.hash ?? null, recoveryQuestion,
-      recoveryCredentials?.hash ?? null, recoveryCredentials?.salt ?? null,
-      recoveryCredentials?.iterations ?? null, now, player.id).run();
+      encryptedEmail?.iv ?? null, encryptedEmail?.hash ?? null, now, player.id).run();
   } catch (error) {
     if (isUniqueConstraint(error)) throw new HttpError(409, 'recovery_email_conflict', 'That recovery email is already registered.');
     throw error;
@@ -519,48 +490,10 @@ export async function upgradeDevicePlayer(request: Request, env: Env): Promise<R
   await linkInstallation(request, env, player.id, installationId, meta);
   const deviceCredentials = await issueProfileDeviceCredential(env, player.id, installationId);
   return {
-    player: { id: player.id, display_name: player.display_name, recovery_email_configured: Boolean(recoveryEmail), recovery_question_configured: Boolean(recoveryQuestion), created_at: player.created_at },
+    player: { id: player.id, display_name: player.display_name, recovery_email_configured: Boolean(recoveryEmail), created_at: player.created_at },
     session: await createPlayerSession(env, player.id),
     device_credentials: deviceCredentials,
     upgraded_legacy_profile: true,
-  };
-}
-
-export async function getRecoveryQuestion(request: Request, env: Env): Promise<Record<string, unknown>> {
-  await enforceRateLimit(request, env, { routeKey: 'recovery-question-read', limit: 12, windowSeconds: 900 });
-  const body = await readJson<Record<string, unknown>>(request);
-  const name = validateDisplayName(body.name);
-  const row = await env.DB.prepare(
-    `SELECT recovery_question FROM players
-      WHERE normalized_name=? AND auth_kind='password' AND deleted_at IS NULL`,
-  ).bind(name.normalized_name).first<{ recovery_question: string | null }>();
-  if (!row?.recovery_question) {
-    throw new HttpError(404, 'recovery_question_unavailable', 'This leaderboard profile does not have a personal recovery question.');
-  }
-  return { recovery_question: row.recovery_question };
-}
-
-export async function recoverWithPersonalQuestion(request: Request, env: Env): Promise<Record<string, unknown>> {
-  await enforceRateLimit(request, env, { routeKey: 'recovery-question-verify', limit: 5, windowSeconds: 900 });
-  const body = await readJson<Record<string, unknown>>(request);
-  const name = validateDisplayName(body.name);
-  const answer = validateRecoveryAnswer(body.answer);
-  if (!answer) throw new HttpError(400, 'invalid_recovery_answer', 'Recovery answer is required.');
-  const meta = parsePlatformMeta(body);
-  const installationId = validateInstallationId(body.installation_id);
-  const player = await env.DB.prepare(
-    `SELECT id, display_name, created_at, recovery_answer_hash, recovery_answer_salt, recovery_answer_iterations
-       FROM players WHERE normalized_name=? AND auth_kind='password' AND deleted_at IS NULL`,
-  ).bind(name.normalized_name).first<{ id: string; display_name: string; created_at: string; recovery_answer_hash: string | null; recovery_answer_salt: string | null; recovery_answer_iterations: number | null }>();
-  const valid = player?.recovery_answer_hash && player.recovery_answer_salt && player.recovery_answer_iterations
-    ? await verifyPassword(answer, player.recovery_answer_hash, player.recovery_answer_salt, player.recovery_answer_iterations)
-    : false;
-  if (!player || !valid) throw new HttpError(401, 'invalid_recovery_answer', 'The recovery answer is incorrect.');
-  await linkInstallation(request, env, player.id, installationId, meta);
-  return {
-    player: { id: player.id, display_name: player.display_name, created_at: player.created_at },
-    session: await createPlayerSession(env, player.id),
-    device_credentials: await issueProfileDeviceCredential(env, player.id, installationId),
   };
 }
 
