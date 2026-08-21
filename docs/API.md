@@ -13,6 +13,10 @@ Player authentication uses `Authorization: Bearer <opaque-session-token>`. Admin
 | `GET` | `/v1/leaderboard` | None | Ranked active global leaderboard |
 | `POST` | `/v1/accounts/register` | None | Account + optional initial score |
 | `POST` | `/v1/accounts/login` | None | Cross-device login |
+| `POST` | `/v1/leaderboard-profiles/claim` | None | Alias for account registration used by the game flow |
+| `POST` | `/v1/leaderboard-profiles/login` | None | Alias for cross-device login |
+| `POST` | `/v1/leaderboard-profiles/upgrade` | Legacy session or device credential | Convert an old device-only name in place |
+| `POST` | `/v1/leaderboard-profiles/session` | Saved device credential | Refresh an expired bearer session without asking for the password |
 | `POST` | `/v1/accounts/logout` | Player | Revoke current session |
 | `GET` | `/v1/account` | Player | Current account summary |
 | `DELETE` | `/v1/account` | Player + password | Permanent privacy deletion |
@@ -59,6 +63,32 @@ Player authentication uses `Authorization: Bearer <opaque-session-token>`. Admin
 ```
 
 The response includes `improved`. A valid attempt is retained in score history even when it does not replace the player's best global score.
+
+### Name ownership and device persistence
+
+`GET /v1/device-players/name-availability?name=Jong` retains `available` and now also returns
+`claim_state` (`available`, `login_required`, or `legacy_upgrade_required`) plus
+`requires_password`. Names are compared case-insensitively after trimming and normalizing spaces.
+
+Registration and login accept the same platform metadata shown above. They link the
+installation to the profile and return both the short-lived bearer `session` and
+`device_credentials: { player_id, credential }`. Store the credential in secure APK
+storage or browser storage appropriate to the client. When the bearer token expires,
+send those values with `installation_id` to `/v1/leaderboard-profiles/session`; the
+server returns a new bearer session without another password prompt. The server stores
+only a SHA-256 hash of the random device credential.
+
+For a name created by the old `/v1/device-players/register` flow, call
+`/v1/leaderboard-profiles/upgrade` with `name`, the new `password`, optional
+`recovery_email`, platform metadata, and either its saved legacy `credential` or its
+current bearer token. The row is upgraded in place, preserving player ID, scores,
+rank, history, and referral data. A name already upgraded returns
+`profile_already_claimed`; the client should use login instead.
+
+Recovery email is optional, normalized, encrypted with AES-GCM, and never returned.
+No reset/request endpoint is exposed until an authenticated email-delivery service is
+configured; the field is future-ready and `recovery_email_configured` reports only a
+boolean.
 
 ### Analytics event batch
 

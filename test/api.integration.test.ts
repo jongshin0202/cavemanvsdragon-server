@@ -94,6 +94,7 @@ beforeAll(async () => {
   await applySql(backupDb, readFileSync(new URL('../backup-migrations/0001_backup.sql', import.meta.url), 'utf8'));
   await applySql(mainDb, readFileSync(new URL('../migrations/0002_leaderboard_snapshots.sql', import.meta.url), 'utf8'));
   await applySql(mainDb, readFileSync(new URL('../migrations/0003_snapshot_archival.sql', import.meta.url), 'utf8'));
+  await applySql(mainDb, readFileSync(new URL('../migrations/0004_leaderboard_profiles.sql', import.meta.url), 'utf8'));
   await applySql(backupDb, readFileSync(new URL('../backup-migrations/0002_managed_leaderboard.sql', import.meta.url), 'utf8'));
 });
 
@@ -127,12 +128,25 @@ describe.sequential('Worker + D1 integration', () => {
     const payload = await json<{
       player: { id: string; display_name: string };
       session: { token: string };
+      device_credentials: { player_id: string; credential: string };
       initial_score: { improved: boolean };
     }>(response);
     expect(payload.data.player.display_name).toBe('Rock Hero');
     expect(payload.data.initial_score.improved).toBe(true);
     playerId = payload.data.player.id;
     playerToken = payload.data.session.token;
+    expect(payload.data.device_credentials.player_id).toBe(playerId);
+    const refreshed = await mf.dispatchFetch('https://api.example/v1/leaderboard-profiles/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.55' },
+      body: JSON.stringify({
+        player_id: playerId,
+        credential: payload.data.device_credentials.credential,
+        installation_id: playerMeta.installation_id,
+      }),
+    });
+    expect(refreshed.status).toBe(200);
+    expect((await json<{ session: { token: string } }>(refreshed)).data.session.token).toBeTruthy();
     const db = await mf.getD1Database('DB');
     const stored = await db.prepare(
       'SELECT password_iterations FROM players WHERE id = ?',
@@ -523,7 +537,7 @@ describe.sequential('Worker + D1 integration', () => {
       });
     };
 
-    expect((await availability('JONG')).data).toEqual({
+    expect((await availability('JONG')).data).toMatchObject({
       available: true,
       display_name: 'JONG',
     });
@@ -587,6 +601,31 @@ describe.sequential('Worker + D1 integration', () => {
     });
     expect(wrongInstallation.status).toBe(401);
     expect(second.data.device_credentials.player_id).not.toBe(first.data.device_credentials.player_id);
+  });
+
+  it('upgrades a legacy device profile without replacing its identity or score', async () => {
+    const meta = { ...playerMeta, installation_id: 'legacy_installation_123456789' };
+    const created = await mf.dispatchFetch('https://api.example/v1/device-players/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.77' },
+      body: JSON.stringify({ name: 'Old Cave', initial_score: 777, ...meta }),
+    });
+    const legacy = await json<{ player: { id: string }; device_credentials: { credential: string } }>(created);
+    const upgraded = await mf.dispatchFetch('https://api.example/v1/leaderboard-profiles/upgrade', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.77' },
+      body: JSON.stringify({
+        name: 'Old Cave', password: 'new-profile-password',
+        credential: legacy.data.device_credentials.credential, ...meta,
+      }),
+    });
+    expect(upgraded.status).toBe(200);
+    const result = await json<{ player: { id: string }; upgraded_legacy_profile: boolean }>(upgraded);
+    expect(result.data.player.id).toBe(legacy.data.player.id);
+    expect(result.data.upgraded_legacy_profile).toBe(true);
+    const row = await mainDb.prepare('SELECT best_score FROM leaderboard_entries WHERE player_id=?')
+      .bind(legacy.data.player.id).first<{ best_score: number }>();
+    expect(row?.best_score).toBe(777);
   });
 
 });
