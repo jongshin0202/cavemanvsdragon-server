@@ -148,7 +148,8 @@ export async function submitScore(
          app_version = excluded.app_version,
          verification_status = excluded.verification_status,
          deleted_at = NULL
-       WHERE excluded.best_score > leaderboard_entries.best_score`,
+       WHERE leaderboard_entries.deleted_at IS NOT NULL
+          OR excluded.best_score > leaderboard_entries.best_score`,
     ).bind(
       auth.player_id, score, level, submittedAt, now, meta.source_platform, meta.web_source,
       meta.device_type, meta.control_type, meta.app_version,

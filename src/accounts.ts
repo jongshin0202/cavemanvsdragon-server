@@ -32,7 +32,7 @@ function isUniqueConstraint(error: unknown): boolean {
 export async function getDevicePlayerNameAvailability(
   request: Request,
   env: Env,
-): Promise<{ available: boolean; display_name: string; claim_state: 'available' | 'login_required' | 'legacy_upgrade_required'; requires_password: boolean }> {
+): Promise<{ available: boolean; display_name: string; claim_state: 'available' | 'login_required' | 'legacy_upgrade_required' | 'cleared_legacy_reclaimable'; requires_password: boolean }> {
   await enforceRateLimit(request, env, {
     routeKey: 'device-player-name-availability',
     limit: 60,
@@ -40,15 +40,38 @@ export async function getDevicePlayerNameAvailability(
   });
   const name = validateDisplayName(new URL(request.url).searchParams.get('name'));
   const existing = await env.DB.prepare(
-    `SELECT id, auth_kind
-       FROM players
-      WHERE normalized_name = ? OR UPPER(TRIM(display_name)) = ?
+    `SELECT p.id, p.auth_kind,
+            CASE WHEN p.auth_kind = 'legacy_device'
+              AND NOT EXISTS (
+                SELECT 1 FROM leaderboard_entries le
+                 WHERE le.player_id = p.id AND le.deleted_at IS NULL
+              )
+              AND EXISTS (
+                SELECT 1
+                  FROM leaderboard_clear_batch_items bi
+                  JOIN leaderboard_clear_batches b ON b.id = bi.batch_id
+                 WHERE bi.player_id = p.id AND b.undone_at IS NULL
+              )
+            THEN 1 ELSE 0 END AS cleared_reclaimable
+       FROM players p
+      WHERE p.normalized_name = ? OR UPPER(TRIM(p.display_name)) = ?
       LIMIT 1`,
-  ).bind(name.normalized_name, name.normalized_name).first<{ id: string; auth_kind: 'password' | 'legacy_device' }>();
+  ).bind(name.normalized_name, name.normalized_name).first<{
+    id: string;
+    auth_kind: 'password' | 'legacy_device';
+    cleared_reclaimable: number;
+  }>();
+  const claimState = !existing
+    ? 'available'
+    : existing.auth_kind === 'password'
+      ? 'login_required'
+      : existing.cleared_reclaimable === 1
+        ? 'cleared_legacy_reclaimable'
+        : 'legacy_upgrade_required';
   return {
     available: !existing,
     display_name: name.display_name,
-    claim_state: !existing ? 'available' : existing.auth_kind === 'password' ? 'login_required' : 'legacy_upgrade_required',
+    claim_state: claimState,
     requires_password: Boolean(existing),
   };
 }
@@ -462,8 +485,21 @@ export async function upgradeDevicePlayer(request: Request, env: Env): Promise<R
   if (!player) throw new HttpError(404, 'profile_not_found', 'That leaderboard profile does not exist.');
   if (player.auth_kind === 'password') throw new HttpError(409, 'profile_already_claimed', 'That name already has a password. Log in instead.');
 
+  const clearedLegacy = await env.DB.prepare(
+    `SELECT 1 AS allowed
+       FROM leaderboard_clear_batch_items bi
+       JOIN leaderboard_clear_batches b ON b.id = bi.batch_id
+      WHERE bi.player_id = ? AND b.undone_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM leaderboard_entries le
+           WHERE le.player_id = ? AND le.deleted_at IS NULL
+        )
+      LIMIT 1`,
+  ).bind(player.id, player.id).first<{ allowed: number }>();
+  const reclaimingClearedLegacy = Boolean(clearedLegacy);
+
   const current = await optionalPlayer(request, env);
-  let authorized = current?.player_id === player.id;
+  let authorized = current?.player_id === player.id || reclaimingClearedLegacy;
   if (!authorized && body.credential !== undefined) {
     const credential = validatePassword(body.credential);
     const installation = await env.DB.prepare('SELECT player_id FROM installations WHERE id = ?')
@@ -478,11 +514,15 @@ export async function upgradeDevicePlayer(request: Request, env: Env): Promise<R
   const encryptedEmail = recoveryEmail ? await encryptRecoveryEmail(recoveryEmail, env.RECOVERY_EMAIL_KEY) : null;
   const now = utcNow();
   try {
-    await env.DB.prepare(
+    const updated = await env.DB.prepare(
       `UPDATE players SET password_hash=?, password_salt=?, password_iterations=?, auth_kind='password',
-       recovery_email_ciphertext=?, recovery_email_iv=?, recovery_email_hash=?, updated_at=? WHERE id=?`,
+       recovery_email_ciphertext=?, recovery_email_iv=?, recovery_email_hash=?, updated_at=?
+       WHERE id=? AND auth_kind='legacy_device'`,
     ).bind(credentials.hash, credentials.salt, credentials.iterations, encryptedEmail?.ciphertext ?? null,
       encryptedEmail?.iv ?? null, encryptedEmail?.hash ?? null, now, player.id).run();
+    if (updated.meta.changes !== 1) {
+      throw new HttpError(409, 'profile_already_claimed', 'That name was just protected. Log in instead.');
+    }
   } catch (error) {
     if (isUniqueConstraint(error)) throw new HttpError(409, 'recovery_email_conflict', 'That recovery email is already registered.');
     throw error;
@@ -494,6 +534,7 @@ export async function upgradeDevicePlayer(request: Request, env: Env): Promise<R
     session: await createPlayerSession(env, player.id),
     device_credentials: deviceCredentials,
     upgraded_legacy_profile: true,
+    reclaimed_cleared_legacy_profile: reclaimingClearedLegacy,
   };
 }
 
