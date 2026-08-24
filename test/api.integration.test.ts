@@ -628,4 +628,64 @@ describe.sequential('Worker + D1 integration', () => {
     expect(row?.best_score).toBe(777);
   });
 
+  it('lets a new installation reclaim a globally cleared legacy name and starts its score fresh', async () => {
+    const originalMeta = { ...playerMeta, installation_id: 'cleared_legacy_original_12345' };
+    const created = await mf.dispatchFetch('https://api.example/v1/device-players/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.91' },
+      body: JSON.stringify({ name: 'Reset Cave', initial_score: 9000, ...originalMeta }),
+    });
+    expect(created.status).toBe(201);
+
+    const challenge = await json<{ challenge_id: string }>(await mf.dispatchFetch(
+      'https://api.example/v1/admin/leaderboard/clear/challenge',
+      { method: 'POST', headers: adminHeaders(), body: '{}' },
+    ));
+    const cleared = await mf.dispatchFetch('https://api.example/v1/admin/leaderboard/clear', {
+      method: 'POST',
+      headers: adminHeaders(),
+      body: JSON.stringify({
+        challenge_id: challenge.data.challenge_id,
+        confirmation_1: true,
+        confirmation_2: true,
+        confirmation_phrase: 'CLEAR PRIMARY ONLY',
+      }),
+    });
+    expect(cleared.status).toBe(200);
+
+    const availability = await json<{ claim_state: string }>(await mf.dispatchFetch(
+      'https://api.example/v1/device-players/name-availability?name=Reset%20Cave',
+    ));
+    expect(availability.data.claim_state).toBe('cleared_legacy_reclaimable');
+
+    const newMeta = { ...playerMeta, installation_id: 'cleared_legacy_new_phone_12345' };
+    const reclaimed = await mf.dispatchFetch('https://api.example/v1/leaderboard-profiles/upgrade', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.92' },
+      body: JSON.stringify({ name: 'Reset Cave', password: 'new-profile-password', ...newMeta }),
+    });
+    expect(reclaimed.status).toBe(200);
+    const result = await json<{
+      session: { token: string };
+      reclaimed_cleared_legacy_profile: boolean;
+    }>(reclaimed);
+    expect(result.data.reclaimed_cleared_legacy_profile).toBe(true);
+
+    const lowerFreshScore = await mf.dispatchFetch('https://api.example/v1/scores', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${result.data.session.token}`,
+        'Content-Type': 'application/json',
+        'CF-Connecting-IP': '203.0.113.92',
+      },
+      body: JSON.stringify({ score: 100, level: 1, ...newMeta }),
+    });
+    expect(lowerFreshScore.status).toBe(201);
+    const row = await mainDb.prepare(
+      `SELECT le.best_score AS best_score, le.deleted_at AS deleted_at FROM leaderboard_entries le
+       JOIN players p ON p.id=le.player_id WHERE p.normalized_name='RESET CAVE'`,
+    ).first<{ best_score: number; deleted_at: string | null }>();
+    expect(row).toEqual({ best_score: 100, deleted_at: null });
+  });
+
 });
