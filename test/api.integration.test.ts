@@ -612,6 +612,11 @@ describe.sequential('Worker + D1 integration', () => {
     });
     const legacy = await json<{ player: { id: string } }>(created);
 
+    // Early device profiles used a private DEVICE_* normalized name while
+    // retaining the public leaderboard name only in display_name.
+    await mainDb.prepare('UPDATE players SET normalized_name=? WHERE id=?')
+      .bind(`DEVICE_${legacy.data.player.id.replaceAll('-', '').toUpperCase()}`, legacy.data.player.id).run();
+
     const availability = await json<{ claim_state: string }>(await mf.dispatchFetch(
       'https://api.example/v1/device-players/name-availability?name=Old%20Cave',
     ));
