@@ -40,34 +40,21 @@ export async function getDevicePlayerNameAvailability(
   });
   const name = validateDisplayName(new URL(request.url).searchParams.get('name'));
   const existing = await env.DB.prepare(
-    `SELECT p.id, p.auth_kind,
-            CASE WHEN p.auth_kind = 'legacy_device'
-              AND NOT EXISTS (
-                SELECT 1 FROM leaderboard_entries le
-                 WHERE le.player_id = p.id AND le.deleted_at IS NULL
-              )
-              AND EXISTS (
-                SELECT 1
-                  FROM leaderboard_clear_batch_items bi
-                  JOIN leaderboard_clear_batches b ON b.id = bi.batch_id
-                 WHERE bi.player_id = p.id AND b.undone_at IS NULL
-              )
-            THEN 1 ELSE 0 END AS cleared_reclaimable
+    `SELECT p.id, p.auth_kind
        FROM players p
       WHERE p.normalized_name = ? OR UPPER(TRIM(p.display_name)) = ?
       LIMIT 1`,
   ).bind(name.normalized_name, name.normalized_name).first<{
     id: string;
     auth_kind: 'password' | 'legacy_device';
-    cleared_reclaimable: number;
   }>();
   const claimState = !existing
     ? 'available'
     : existing.auth_kind === 'password'
       ? 'login_required'
-      : existing.cleared_reclaimable === 1
-        ? 'cleared_legacy_reclaimable'
-        : 'legacy_upgrade_required';
+      // Legacy profiles predate passwords. Any such name must be claimable from
+      // the current installation so a lost device can never dead-end the player.
+      : 'cleared_legacy_reclaimable';
   return {
     available: !existing,
     display_name: name.display_name,
@@ -485,30 +472,12 @@ export async function upgradeDevicePlayer(request: Request, env: Env): Promise<R
   if (!player) throw new HttpError(404, 'profile_not_found', 'That leaderboard profile does not exist.');
   if (player.auth_kind === 'password') throw new HttpError(409, 'profile_already_claimed', 'That name already has a password. Log in instead.');
 
-  const clearedLegacy = await env.DB.prepare(
-    `SELECT 1 AS allowed
-       FROM leaderboard_clear_batch_items bi
-       JOIN leaderboard_clear_batches b ON b.id = bi.batch_id
-      WHERE bi.player_id = ? AND b.undone_at IS NULL
-        AND NOT EXISTS (
-          SELECT 1 FROM leaderboard_entries le
-           WHERE le.player_id = ? AND le.deleted_at IS NULL
-        )
-      LIMIT 1`,
-  ).bind(player.id, player.id).first<{ allowed: number }>();
-  const reclaimingClearedLegacy = Boolean(clearedLegacy);
-
+  // Passwordless legacy profiles have no recoverable cross-device proof. The
+  // first successful password upgrade claims the profile; the conditional
+  // UPDATE below makes concurrent claims race-safe. Password-protected names
+  // never enter this path and continue to require their existing password.
   const current = await optionalPlayer(request, env);
-  let authorized = current?.player_id === player.id || reclaimingClearedLegacy;
-  if (!authorized && body.credential !== undefined) {
-    const credential = validatePassword(body.credential);
-    const installation = await env.DB.prepare('SELECT player_id FROM installations WHERE id = ?')
-      .bind(installationId).first<{ player_id: string | null }>();
-    authorized = installation?.player_id === player.id && await verifyPassword(
-      credential, player.password_hash, player.password_salt, player.password_iterations,
-    );
-  }
-  if (!authorized) throw new HttpError(401, 'legacy_credentials_required', 'Use the device where this name was created to set its password.');
+  const reclaimingPasswordlessLegacy = current?.player_id !== player.id;
 
   const credentials = await hashPassword(password, passwordIterations(env));
   const encryptedEmail = recoveryEmail ? await encryptRecoveryEmail(recoveryEmail, env.RECOVERY_EMAIL_KEY) : null;
@@ -534,7 +503,8 @@ export async function upgradeDevicePlayer(request: Request, env: Env): Promise<R
     session: await createPlayerSession(env, player.id),
     device_credentials: deviceCredentials,
     upgraded_legacy_profile: true,
-    reclaimed_cleared_legacy_profile: reclaimingClearedLegacy,
+    reclaimed_cleared_legacy_profile: reclaimingPasswordlessLegacy,
+    reclaimed_passwordless_legacy_profile: reclaimingPasswordlessLegacy,
   };
 }
 
