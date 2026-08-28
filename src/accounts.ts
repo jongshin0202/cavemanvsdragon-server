@@ -42,7 +42,12 @@ export async function getDevicePlayerNameAvailability(
   const existing = await env.DB.prepare(
     `SELECT p.id, p.auth_kind
        FROM players p
+       LEFT JOIN leaderboard_entries le ON le.player_id = p.id
       WHERE p.normalized_name = ? OR UPPER(TRIM(p.display_name)) = ?
+      ORDER BY CASE WHEN p.auth_kind = 'password' THEN 0 ELSE 1 END,
+               CASE WHEN le.deleted_at IS NULL THEN 0 ELSE 1 END,
+               COALESCE(le.best_score, 0) DESC,
+               p.created_at ASC
       LIMIT 1`,
   ).bind(name.normalized_name, name.normalized_name).first<{
     id: string;
@@ -466,9 +471,18 @@ export async function upgradeDevicePlayer(request: Request, env: Env): Promise<R
   const installationId = validateInstallationId(body.installation_id);
   const meta = parsePlatformMeta(body);
   const player = await env.DB.prepare(
-    `SELECT id, display_name, normalized_name, password_hash, password_salt, password_iterations, auth_kind, created_at
-     FROM players WHERE normalized_name = ? AND deleted_at IS NULL LIMIT 1`,
-  ).bind(name.normalized_name).first<PlayerAuth & { id: string; auth_kind: string; created_at: string }>();
+    `SELECT p.id, p.display_name, p.normalized_name, p.password_hash, p.password_salt,
+            p.password_iterations, p.auth_kind, p.created_at
+       FROM players p
+       LEFT JOIN leaderboard_entries le ON le.player_id = p.id
+      WHERE (p.normalized_name = ? OR UPPER(TRIM(p.display_name)) = ?)
+        AND p.deleted_at IS NULL
+      ORDER BY CASE WHEN p.auth_kind = 'password' THEN 0 ELSE 1 END,
+               CASE WHEN le.deleted_at IS NULL THEN 0 ELSE 1 END,
+               COALESCE(le.best_score, 0) DESC,
+               p.created_at ASC
+      LIMIT 1`,
+  ).bind(name.normalized_name, name.normalized_name).first<PlayerAuth & { id: string; auth_kind: string; created_at: string }>();
   if (!player) throw new HttpError(404, 'profile_not_found', 'That leaderboard profile does not exist.');
   if (player.auth_kind === 'password') throw new HttpError(409, 'profile_already_claimed', 'That name already has a password. Log in instead.');
 
