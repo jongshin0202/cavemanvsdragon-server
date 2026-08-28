@@ -15,8 +15,9 @@ describe('player validation', () => {
   });
 
   it('requires a non-trivial password', () => {
-    expect(() => validatePassword('short')).toThrow(HttpError);
-    expect(validatePassword('long-enough-password')).toBe('long-enough-password');
+    expect(() => validatePassword('four')).toThrow(HttpError);
+    expect(validatePassword('five5')).toBe('five5');
+    expect(() => validatePassword('x'.repeat(129))).toThrow(HttpError);
   });
 });
 

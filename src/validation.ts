@@ -46,8 +46,8 @@ export function validateDisplayName(value: unknown): { display_name: string; nor
 }
 
 export function validatePassword(value: unknown): string {
-  if (typeof value !== 'string' || value.length < 10 || value.length > 128) {
-    throw new HttpError(400, 'invalid_password', 'Password must be 10 to 128 characters.');
+  if (typeof value !== 'string' || value.length < 5 || value.length > 128) {
+    throw new HttpError(400, 'invalid_password', 'Password must be 5 to 128 characters.');
   }
   return value;
 }
