@@ -603,20 +603,26 @@ describe.sequential('Worker + D1 integration', () => {
     expect(second.data.device_credentials.player_id).not.toBe(first.data.device_credentials.player_id);
   });
 
-  it('upgrades a legacy device profile without replacing its identity or score', async () => {
+  it('lets a fresh installation claim any passwordless legacy profile without replacing its identity or score', async () => {
     const meta = { ...playerMeta, installation_id: 'legacy_installation_123456789' };
     const created = await mf.dispatchFetch('https://api.example/v1/device-players/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.77' },
       body: JSON.stringify({ name: 'Old Cave', initial_score: 777, ...meta }),
     });
-    const legacy = await json<{ player: { id: string }; device_credentials: { credential: string } }>(created);
+    const legacy = await json<{ player: { id: string } }>(created);
+
+    const availability = await json<{ claim_state: string }>(await mf.dispatchFetch(
+      'https://api.example/v1/device-players/name-availability?name=Old%20Cave',
+    ));
+    expect(availability.data.claim_state).toBe('cleared_legacy_reclaimable');
+
+    const freshMeta = { ...playerMeta, installation_id: 'legacy_fresh_installation_12345' };
     const upgraded = await mf.dispatchFetch('https://api.example/v1/leaderboard-profiles/upgrade', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.77' },
+      headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.78' },
       body: JSON.stringify({
-        name: 'Old Cave', password: 'new-profile-password',
-        credential: legacy.data.device_credentials.credential, ...meta,
+        name: 'Old Cave', password: 'cave5', ...freshMeta,
       }),
     });
     expect(upgraded.status).toBe(200);
@@ -626,6 +632,11 @@ describe.sequential('Worker + D1 integration', () => {
     const row = await mainDb.prepare('SELECT best_score FROM leaderboard_entries WHERE player_id=?')
       .bind(legacy.data.player.id).first<{ best_score: number }>();
     expect(row?.best_score).toBe(777);
+
+    const protectedAvailability = await json<{ claim_state: string }>(await mf.dispatchFetch(
+      'https://api.example/v1/device-players/name-availability?name=Old%20Cave',
+    ));
+    expect(protectedAvailability.data.claim_state).toBe('login_required');
   });
 
   it('lets a new installation reclaim a globally cleared legacy name and starts its score fresh', async () => {
