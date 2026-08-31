@@ -65,7 +65,7 @@
       "name": "cavemanvsdragon-api",
       "vars": {
         "ENVIRONMENT": "production",
-        "ALLOWED_ORIGINS": "https://www.cavemanvsdragon.com,https://cavemanvsdragon.vercel.app,https://cavemanvsdragon.team2go.co.kr,https://localhost,capacitor://localhost",
+        "ALLOWED_ORIGINS": "https://www.cavemanvsdragon.com,https://cavemanvsdragon.vercel.app,https://cavemanvsdragon.team2go.co.kr,https://cavemanvsdragon-git-design-respon-0e31a1-jwshin1-5345s-projects.vercel.app,https://localhost,capacitor://localhost",
         "PUBLIC_API_URL": "https://cavemanvsdragon-api.jwshin1.workers.dev",
         "WEB_APP_URL": "https://www.cavemanvsdragon.com",
         "ANDROID_STORE_URL": "https://www.cavemanvsdragon.com",
